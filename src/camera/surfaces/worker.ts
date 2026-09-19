@@ -20,6 +20,7 @@ interface UpdateMessage {
   tuning: SurfaceTuning;
   now: number;
   cameraHeightM: number;
+  trustPose?: boolean;
 }
 
 let tuning: SurfaceTuning | null = null;
@@ -29,7 +30,7 @@ self.onmessage = (event: MessageEvent<UpdateMessage>) => {
   const msg = event.data;
   if (msg.type !== 'update') return;
   tuning = msg.tuning;
-  if (!estimator) estimator = new DepthSurfaceEstimator({ cameraHeightM: msg.cameraHeightM, getTuning: () => tuning as SurfaceTuning });
+  if (!estimator) estimator = new DepthSurfaceEstimator({ cameraHeightM: msg.cameraHeightM, getTuning: () => tuning as SurfaceTuning, trustPose: msg.trustPose ?? false });
   const map: DepthMap = { ...msg.map, metric: new Float32Array(msg.map.metric), weight: msg.map.weight ? new Float32Array(msg.map.weight) : undefined };
   // The worker has its own clock; force the run by using the map's timestamp ordering only.
   estimator.update(map, map.pose, msg.now);

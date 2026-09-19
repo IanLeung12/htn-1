@@ -96,6 +96,29 @@ test.describe('zed-sdk bridge (fake)', () => {
     const fwdY = 2 * (q.w * q.x - q.y * q.z); // y of R * (0,0,-1)
     expect(fwdY).toBeCloseTo(-Math.sin((20 * Math.PI) / 180), 2);
 
+    // Pointer ray: with the pointer at the screen centre, the hand ray must follow the LIVE tracked
+    // pose (direction = camera forward, origin on the line through the pose position), never a
+    // static camera at the tuning height.
+    const box = await camPage.locator('canvas').last().boundingBox();
+    expect(box).not.toBeNull();
+    await camPage.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await camPage.waitForTimeout(150);
+    const ray = await evalCam(() => {
+      const cam = window.__camera!;
+      const p = cam.poseSource.pose;
+      const q = p.rotation;
+      const fwd = { x: -2 * (q.x * q.z + q.w * q.y), y: 2 * (q.w * q.x - q.y * q.z), z: -(1 - 2 * (q.x * q.x + q.y * q.y)) };
+      const r = cam.pointer.state.right.ray;
+      return { active: cam.pointer.state.right.active, fwd, dir: { x: r.direction.x, y: r.direction.y, z: r.direction.z }, origin: { x: r.origin.x, y: r.origin.y, z: r.origin.z }, pos: p.position };
+    });
+    expect(ray.active).toBe(true);
+    const dot = ray.fwd.x * ray.dir.x + ray.fwd.y * ray.dir.y + ray.fwd.z * ray.dir.z;
+    expect((Math.acos(Math.min(1, dot)) * 180) / Math.PI).toBeLessThan(1);
+    // origin = pose position + k * direction (the adapter pulls the origin toward the hit point).
+    const d = { x: ray.origin.x - ray.pos.x, y: ray.origin.y - ray.pos.y, z: ray.origin.z - ray.pos.z };
+    const k = d.x * ray.dir.x + d.y * ray.dir.y + d.z * ray.dir.z;
+    expect(Math.hypot(d.x - k * ray.dir.x, d.y - k * ray.dir.y, d.z - k * ray.dir.z)).toBeLessThan(0.01);
+
     // A capture through the pipeline carries the measured depth.
     const frame = await evalCam(async () => {
       const cam = window.__camera!;

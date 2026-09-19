@@ -162,4 +162,21 @@ describe('DepthSurfaceEstimator', () => {
     // Sanity: the surfaces array reference actually did change across the first update.
     expect(surfacesBefore).not.toBe(surfacesAfterFirst);
   });
+
+  it('trustPose keeps the tracked pose as the world frame and reports the ground plane height', () => {
+    // A tracked camera 0.3 m higher than the tuning value, looking at the same floor: with
+    // trustPose the frame is the pose itself (no re-derived height) and the plane's y is reported.
+    const pose = new StaticPoseSource({ cameraHeightM: CAMERA_HEIGHT_M + 0.3, pitchRad: PITCH_RAD }).pose;
+    const depth = buildDepthMapWithBox(pose, WIDTH, HEIGHT, FOV_Y, ASPECT, BOX_AABB, 1000);
+    // The map was rendered with the floor at y = 0 under that pose; pretend the tracker's floor sits 0.3 m lower.
+    const est = new DepthSurfaceEstimator({ cameraHeightM: CAMERA_HEIGHT_M, minIntervalMs: 0, stride: 1, trustPose: true });
+    est.update(depth, pose, 1000);
+    expect(est.lastFrame).not.toBeNull();
+    expect(est.lastFrame!.position.y).toBeCloseTo(pose.position.y, 9);
+    expect(est.lastFrame!.rotation).toEqual(pose.rotation);
+    expect(est.correction).not.toBeNull();
+    expect(Math.abs(est.correction!.groundY)).toBeLessThan(0.05);
+    expect(Math.abs(est.cameraHeightM - pose.position.y)).toBeLessThan(0.05);
+    expect(est.volumes.length).toBeGreaterThan(0);
+  });
 });

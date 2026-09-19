@@ -84,11 +84,19 @@ Text commands from the page: `{"cmd":"reset"}`, `{"cmd":"config","jpegWidth":128
 - The SDK is opened with `COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP` + `UNIT.METER`: x right,
   y up, z toward the viewer, camera looks along -z. That is the app's world frame (three.js),
   so the pose matrix is used without an axis swap (`src/camera/zedsdk/protocol.ts`).
-- Floor: the bridge enables tracking with `set_floor_as_origin`, so the SDK puts the world
-  origin on the detected floor under the start pose and `floorY = 0`; `ZedSdkPoseSource`
-  then uses the SDK's y directly (floor mode `sdk`). If the SDK found no floor (origin at the
-  camera, `y ~ 0` on the first OK frame) or `floorY` is null, the tuning camera height is
-  applied as an offset so the first tracked pose sits at `y = cameraHeightM` (mode `tuning`).
+- One world frame: with a tracked pose the surface estimator runs in `trustPose` mode
+  (`WorkerSurfaceEstimator({ trustPose: true })`): it keeps the map's pose as the world frame
+  instead of re-deriving pitch/roll/height from the dominant plane, so RANSAC surfaces,
+  volumes, `pickWorld` and the pointer ray (three.js camera = `poseSource.pose`, fovY from the
+  SDK) all agree. `src/camera/ray.ts` is the pure equivalent of that ray, unit-tested.
+- Floor policy (`ZedSdkPoseSource.floorMode`): the bridge enables tracking with
+  `set_floor_as_origin`; the SDK floor is believed (`sdk`) only when the camera height it
+  implies is within 0.35 m of the tuning height - the SDK happily fits its "floor" on a desk
+  or a wall when no floor is in view. Otherwise the tuning height is applied as an offset
+  (`tuning`) until the estimator reports its dominant horizontal plane (`correction.groundY`,
+  confidence >= 0.5, >= 500 inliers, >= 0.5 m extent), which then becomes y = 0 (`plane`;
+  changes under 3 cm ignored, larger ones smoothed by half per run). Horizontal planes more
+  than 1.6 m above the ground are dropped (ceiling, not tables).
 - Depth is `MEASURE.DEPTH`: z-distance along the camera forward axis (what `DepthMap.metric`
   expects), holes/NaN and pixels under confidence 128 become 0. `DepthMap.confidence` is 0.95
   (measurement grade; `tier-cap.ts` treats `'zed-sdk'` like `'sensor'`, tier A) scaled down when
@@ -112,9 +120,9 @@ Text commands from the page: `{"cmd":"reset"}`, `{"cmd":"config","jpegWidth":128
   the bridge falls back ULTRA -> PERFORMANCE automatically when a mode fails to open.
 - Floor origin caveat: with the camera 0.36 m from a desk object, `set_floor_as_origin`
   produced camera heights of 2.97 m (ULTRA run) and 0.16 m (NEURAL run) - the SDK fitted a
-  'floor' on whatever dominated the view. `ZedSdkPoseSource` treats a first pose under 0.3 m
-  as "no floor" and uses the tuning height; point the camera at real floor when starting the
-  bridge, or send `{"cmd":"reset"}` (`window.__zedBridge.poseSource.reset()`) once it does.
+  'floor' on whatever dominated the view; hence the floor policy above. Point the camera at
+  real floor when starting the bridge, or send `{"cmd":"reset"}`
+  (`window.__zedBridge.poseSource.reset()`) once it does.
 
 ## Remaining
 

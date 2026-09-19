@@ -248,7 +248,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   if (stereoSource) config.source = 'stereo';
   const poseSource = zedSdk?.poseSource ?? createPoseSource(config);
   // Floor prior until estimated depth is confident enough for RANSAC planes/volumes (computed in a worker).
-  const surfaceEstimator = new WorkerSurfaceEstimator({ cameraHeightM: config.cameraHeightM, getTuning: () => tuning.value });
+  const surfaceEstimator = new WorkerSurfaceEstimator({ cameraHeightM: config.cameraHeightM, getTuning: () => tuning.value, trustPose: !!zedSdk });
   // The GPU matcher lives in its own module (src/camera/stereo/contract.ts describes it); when it
   // is not registered the monocular estimator answers and diagnostics say so.
   const stereoFactory = stereoSource ? getStereoDepthFactory() : null;
@@ -899,7 +899,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       );
       if (!result.ok) continue;
       ids.push(candidate.object.id);
-      if (candidate.object.supportSurfaces.length > 0) {
+      // Measured (ZED SDK) depth: the volume's base is trustworthy even when no registered surface sits under it.
+      if (candidate.object.supportSurfaces.length > 0 || zedSdk) {
         store.dispatch(
           { intent: { kind: 'approve', objectId: candidate.object.id, approved: true }, source: 'ui', issuedAt: performance.now(), basedOnVersion: store.current.version },
           conditions(),
@@ -1112,6 +1113,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
 
     // Surfaces from depth (ground plane, tables at any height, walls, volumes) -> store.
     surfaceEstimator.update(depthEstimator.latest, pose, now);
+    zedSdk?.onSurfaces(surfaceEstimator);
     const correction = surfaceEstimator.correction;
     if (correction && correction.at !== lastCorrectionAt) {
       lastCorrectionAt = correction.at;

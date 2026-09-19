@@ -16,6 +16,8 @@ export interface WorkerSurfaceEstimatorOptions {
   getTuning: () => SurfaceTuning;
   /** Force the in-process estimator (tests). */
   inline?: boolean;
+  /** Keep the map's (tracked) pose as the world frame; see DepthSurfaceEstimatorOptions.trustPose. */
+  trustPose?: boolean;
 }
 
 interface ResultMessage {
@@ -36,6 +38,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
   private busy = false;
   private heightM: number;
   private readonly getTuning: () => SurfaceTuning;
+  private readonly trustPose: boolean;
   private lastSentTimestamp = -Infinity;
   private lastSentAt = -Infinity;
 
@@ -52,6 +55,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
   constructor(opts: WorkerSurfaceEstimatorOptions) {
     this.heightM = opts.cameraHeightM;
     this.getTuning = opts.getTuning;
+    this.trustPose = opts.trustPose ?? false;
     const canWorker = !opts.inline && typeof Worker !== 'undefined';
     if (canWorker) {
       try {
@@ -67,7 +71,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
         this.worker = null;
       }
     }
-    this.inline = this.worker ? null : new DepthSurfaceEstimator({ cameraHeightM: opts.cameraHeightM, getTuning: opts.getTuning });
+    this.inline = this.worker ? null : new DepthSurfaceEstimator({ cameraHeightM: opts.cameraHeightM, getTuning: opts.getTuning, trustPose: this.trustPose });
     this.mode = this.worker ? 'worker' : 'inline';
     this.surfaces = this.inline ? this.inline.surfaces : [];
     if (!this.inline) {
@@ -109,14 +113,14 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
     const metric = new Float32Array(depth.metric); // copy: the map stays usable on the main thread
     const weight = depth.weight ? new Float32Array(depth.weight) : undefined;
     this.worker.postMessage(
-      { type: 'update', map: { ...depth, metric: metric.buffer, weight: weight?.buffer }, tuning: this.getTuning(), now, cameraHeightM: this.heightM },
+      { type: 'update', map: { ...depth, metric: metric.buffer, weight: weight?.buffer }, tuning: this.getTuning(), now, cameraHeightM: this.heightM, trustPose: this.trustPose },
       weight ? [metric.buffer, weight.buffer] : [metric.buffer],
     );
   }
 
   private inlineFallback: DepthSurfaceEstimator | null = null;
   private ensureInline(): DepthSurfaceEstimator {
-    if (!this.inlineFallback) this.inlineFallback = new DepthSurfaceEstimator({ cameraHeightM: this.heightM, getTuning: this.getTuning });
+    if (!this.inlineFallback) this.inlineFallback = new DepthSurfaceEstimator({ cameraHeightM: this.heightM, getTuning: this.getTuning, trustPose: this.trustPose });
     return this.inlineFallback;
   }
 

@@ -71,6 +71,13 @@ export interface DepthSurfaceEstimatorOptions {
   /** Largest tilt (rad) of the dominant plane from the camera's up axis that still counts as ground. Default 40 degrees. */
   maxTiltRad?: number;
   getTuning?: () => SurfaceTuning;
+  /**
+   * Tracked poses (ZED SDK bridge): keep the map's pose as the world frame instead of
+   * re-deriving pitch/roll/height from the dominant plane, so surfaces, volumes and picks
+   * agree with the renderer's camera. The dominant plane is still fitted and reported
+   * (`correction.groundY`) so the pose source can put it at y = 0.
+   */
+  trustPose?: boolean;
 }
 
 export interface DepthSurfaceStats {
@@ -98,8 +105,12 @@ export interface FrameCorrection {
   rollCorroborated: boolean;
   /** Larger in-plane extent of the dominant plane (m); small planes must not steer the attitude. */
   extentM: number;
+  /** World y of the dominant plane in the published frame (0 unless `trustPose`, where it is the plane's height in the pose frame). */
+  groundY: number;
   at: Millis;
 }
+/** Horizontal planes higher than this above the ground are ceilings/shelves, not tables. */
+const TABLE_MAX_HEIGHT_M = 1.6;
 
 const FLOOR_MIN_INLIER_FRACTION = 0.1;
 const ROLL_CLAMP_RAD = (5 * Math.PI) / 180;
@@ -217,6 +228,7 @@ export function attitudeFromNormal(n: Vec3): { pitchRad: number; rollRad: number
 
 export class DepthSurfaceEstimator implements SurfaceEstimator {
   private heightM: number;
+  private readonly trustPose: boolean;
   private readonly halfSizeM: number;
   private readonly maxTiltRad: number;
   private readonly getTuning: () => SurfaceTuning;
@@ -250,6 +262,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
 
   constructor(opts: DepthSurfaceEstimatorOptions) {
     this.heightM = opts.cameraHeightM;
+    this.trustPose = opts.trustPose ?? false;
     this.halfSizeM = opts.halfSizeM ?? 6;
     this.maxTiltRad = opts.maxTiltRad ?? (40 * Math.PI) / 180;
     this.legacyInterval = opts.minIntervalMs;
@@ -318,6 +331,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     let floorChanged = false;
     let worldRotation = depth.pose.rotation;
     let worldPosition: Vec3 = depth.pose.position;
+    let groundY = 0;
 
     if (dominant && dominant.inlierFraction >= FLOOR_MIN_INLIER_FRACTION && dominant.inliers.length >= tuning.planeMinInliers) {
       floorInliers = dominant.inliers.length;
@@ -326,13 +340,20 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       const heightM = Math.abs(dominant.d);
       const confidence = Math.min(1, dominant.inlierFraction * 3);
       const extentM = Math.max(dominant.extentMax.x - dominant.extentMin.x, dominant.extentMax.z - dominant.extentMin.z, dominant.extentMax.y - dominant.extentMin.y);
-      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, rollCorroborated: false, extentM, at: now };
-      // World frame from the dominant plane: pitch/roll from its normal, y = 0 on the plane,
-      // yaw from the reported pose (depth cannot observe heading).
-      const yaw = this.yawOf(depth.pose);
-      worldRotation = quatMultiply(quatFromAxisAngle({ x: 0, y: 1, z: 0 }, yaw), quatMultiply(quatFromAxisAngle({ x: 1, y: 0, z: 0 }, att.pitchRad), quatFromAxisAngle({ x: 0, y: 0, z: 1 }, att.rollRad)));
-      worldPosition = { x: depth.pose.position.x, y: heightM, z: depth.pose.position.z };
-      this.heightM = heightM;
+      if (this.trustPose) {
+        // The pose is measured: the plane is expressed in that frame instead of defining it.
+        const c = quatRotateVec3(depth.pose.rotation, dominant.centroid);
+        groundY = c.y + depth.pose.position.y;
+        this.heightM = depth.pose.position.y - groundY;
+      } else {
+        // World frame from the dominant plane: pitch/roll from its normal, y = 0 on the plane,
+        // yaw from the reported pose (depth cannot observe heading).
+        const yaw = this.yawOf(depth.pose);
+        worldRotation = quatMultiply(quatFromAxisAngle({ x: 0, y: 1, z: 0 }, yaw), quatMultiply(quatFromAxisAngle({ x: 1, y: 0, z: 0 }, att.pitchRad), quatFromAxisAngle({ x: 0, y: 0, z: 1 }, att.rollRad)));
+        worldPosition = { x: depth.pose.position.x, y: heightM, z: depth.pose.position.z };
+        this.heightM = heightM;
+      }
+      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, rollCorroborated: false, extentM, groundY, at: now };
       if (this.floorEstimated.origin !== 'ransac' || Math.abs(this.floorEstimated.confidence - confidence) > 0.01) {
         floorChanged = true;
         this.floorEstimated = { surface: this.floorEstimated.surface, confidence, origin: 'ransac' };
@@ -387,7 +408,8 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     const newTrackedTables: Tracked[] = [];
     const tableFits: PlaneFit[] = [];
     for (const fit of horizontal) {
-      if (Math.abs(fit.centroid.y) < TABLE_MIN_OFFSET_M) continue; // the ground itself
+      if (Math.abs(fit.centroid.y - groundY) < TABLE_MIN_OFFSET_M) continue; // the ground itself
+      if (fit.centroid.y - groundY > TABLE_MAX_HEIGHT_M) continue; // ceiling / high shelf
       const ex = fit.extentMax.x - fit.extentMin.x;
       const ez = fit.extentMax.z - fit.extentMin.z;
       if (Math.max(ex, ez) < tuning.planeMinExtentM || Math.min(ex, ez) < tuning.planeMinExtentM / 2) continue;
