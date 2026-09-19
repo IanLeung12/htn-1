@@ -106,6 +106,8 @@ export function capTierForEstimatedDepth(plate: BackgroundPlate, verified: Edita
       if (!f.depth) return 'none';
       const src = f.depthSource ?? 'sensor';
       if (src === 'stereo') return (f.depthConfidence ?? 0) >= STEREO_MEASURED_MIN_CONFIDENCE ? 'sensor' : 'monocular';
+      // ZED SDK depth is a calibrated measurement (tier A allowed) unless the frame was mostly holes.
+      if (src === 'zed-sdk') return (f.depthConfidence ?? 0) >= STEREO_MEASURED_MIN_CONFIDENCE ? 'sensor' : 'monocular';
       return src;
     }),
   );
