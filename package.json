@@ -1,0 +1,32 @@
+{
+  "name": "reality-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reality Editor: live mixed-reality room editor for Quest 3 (WebXR), with simulator and emulated device tests",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@iwer/devui": "^2.4.0",
+    "@iwer/sem": "^2.4.0",
+    "@playwright/test": "^1.63.0",
+    "@types/three": "^0.186.0",
+    "@types/webxr": "^0.5.24",
+    "@vitest/coverage-v8": "^5.0.1",
+    "iwer": "^2.4.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  }
+}
