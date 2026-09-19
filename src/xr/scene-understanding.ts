@@ -9,6 +9,7 @@
  * RuntimeConditions.localizedAnchors.
  */
 import type { Pose, SemanticLabel, Surface, Vec3 } from '@/core/types';
+import { IDENTITY_QUAT } from '@/core/types';
 import type { DetectedVolume } from '@/capture/contract';
 import { quatRotateVec3 } from '@/core/math';
 
@@ -249,7 +250,7 @@ export class SceneUnderstanding {
       const volume: DetectedVolume = {
         id,
         label: plane.semanticLabel ?? 'other',
-        pose: { position: aabbCenter(surface.aabb), rotation: pose.rotation },
+        pose: { position: aabbCenter(surface.aabb), rotation: { ...IDENTITY_QUAT } },
         halfExtents: { x: halfX, y: halfY, z: halfZ },
       };
       this.volumeCache.set(id, volume);
@@ -304,12 +305,14 @@ export class SceneUnderstanding {
     this.callbacks.registerSurface(surface);
 
     if (VOLUME_LABELS.has(mesh.semanticLabel ?? '')) {
-      // Quest volumes report their origin at the top-face centre; the object package
-      // wants the geometric centre so proxies and footprints line up with the AABB.
+      // Quest volumes report their origin at the top-face centre and are often rotated;
+      // the object package uses the world AABB centre with identity rotation so the
+      // world-aligned half extents describe the box directly (rotation deltas from
+      // user edits apply on top).
       const volume: DetectedVolume = {
         id,
         label: mesh.semanticLabel ?? 'other',
-        pose: { position: aabbCenter(surface.aabb), rotation: pose.rotation },
+        pose: { position: aabbCenter(surface.aabb), rotation: { ...IDENTITY_QUAT } },
         halfExtents: {
           x: (surface.aabb.max.x - surface.aabb.min.x) / 2,
           y: (surface.aabb.max.y - surface.aabb.min.y) / 2,

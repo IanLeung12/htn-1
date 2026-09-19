@@ -100,7 +100,8 @@ export class PlateRenderer {
       // shell tiles in src/render/shell.ts).
       const geometry = new THREE.PlaneGeometry(width, depth);
       geometry.rotateX(-Math.PI / 2);
-      const material = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide });
+      // Unlit: the plate is a photo of the background with lighting already baked in.
+      const material = new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide });
       const mesh = new THREE.Mesh(geometry, material);
       const outline = new THREE.LineSegments(
         new THREE.EdgesGeometry(geometry),
@@ -126,7 +127,7 @@ export class PlateRenderer {
     const tint = provenanceTint(plate.provenance);
     entry.outline.visible = visible && tint.dashed;
 
-    const material = entry.mesh.material as THREE.MeshStandardMaterial;
+    const material = entry.mesh.material as THREE.MeshBasicMaterial;
     if (plate.textureRef && entry.textureRef !== plate.textureRef) {
       const frame = this.textures.get(plate.textureRef);
       if (frame) {
