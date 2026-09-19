@@ -18,6 +18,21 @@ export interface CameraFrame {
   fovY: number;
   aspect: number;
   timestamp: number;
+  /**
+   * Additive, optional (general-camera backend, docs/general-camera/architecture.md):
+   * where `depth` came from. Absent means a measured sensor/simulator depth.
+   */
+  depthSource?: 'sensor' | 'monocular' | 'plane-prior' | 'stereo' | 'zed-sdk';
+  /** 0..1 confidence in `depth` (absent = 1). */
+  depthConfidence?: number;
+  /** 0..1 confidence in `pose` (absent = 1). */
+  poseConfidence?: number;
+  /**
+   * Per-frame tolerance (m) for treating a sampled depth as agreeing with a
+   * projected point; absent = the pipeline default (0.05 m). Estimated depth
+   * sets this wider so coverage is honest instead of silently zero.
+   */
+  depthToleranceM?: number;
 }
 
 export interface CameraFrameSource {

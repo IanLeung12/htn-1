@@ -28,6 +28,7 @@ current status and decisions.
 npm install
 npm run dev          # http://localhost:5173/           device page (Quest browser)
                      # http://localhost:5173/sim.html   desktop simulator (IWER emulator)
+                     # http://localhost:5173/camera.html any camera: webcam, phone, USB, or a video file
 npm test             # unit tests (core, capture)
 npm run test:e2e     # Playwright scenarios driving the simulator headlessly
 npm run check        # typecheck + unit tests + production build
@@ -35,6 +36,16 @@ npm run check        # typecheck + unit tests + production build
 
 To run on a Quest 3, serve over HTTPS (or use `adb reverse tcp:5173 tcp:5173` and open
 `http://localhost:5173/` in the headset browser) and press Enter AR.
+
+## Any camera (no headset)
+
+`camera.html` runs the same editor on a laptop/phone webcam, a USB camera, or a recorded
+video: the video is the passthrough, depth comes from a monocular model (Depth Anything V2
+small in a Web Worker) with an analytic floor-plane fallback, the camera pose comes from
+device orientation or a static tripod setting, and the mouse/finger replaces hands. Estimated
+depth and pose are confidence-tagged and cap editability tiers (see
+`docs/general-camera/architecture.md`). Query params: `?pose=static|orientation|visual`,
+`?depth=auto|model|prior|none`, `?height=<m>`, `?pitch=<deg>`, `?fov=<deg>`, `?url=<video>`.
 
 ## Layout
 
@@ -46,6 +57,7 @@ To run on a Quest 3, serve over HTTPS (or use `adb reverse tcp:5173 tcp:5173` an
 | `src/capture/` | Candidate discovery, clean-plate acquisition, verification sweep, editability tiers |
 | `src/app/` | `startApp()` wiring and the interaction transaction |
 | `src/sim/` | Headset simulator built on Meta IWER + synthetic environment module |
+| `src/camera/` | General-camera backend: frame sources, pose sources, depth estimators, surface estimation, pointer input, `startCameraApp()` |
 | `tests/unit/` | vitest |
 | `tests/e2e/` | Playwright + IWER scenarios mapped to the feasibility gates |
 

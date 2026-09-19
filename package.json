@@ -16,6 +16,7 @@
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "three": "^0.186.0"
   },
   "devDependencies": {

@@ -1,0 +1,5 @@
+websockets>=13
+numpy>=1.26
+opencv-python>=4.9
+cython
+requests

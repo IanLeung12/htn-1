@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Reality Editor — Camera</title>
+    <meta name="description" content="Reality Editor on any camera: webcam, phone, USB camera, or a recorded video." />
+    <meta name="theme-color" content="#0b0b0d" />
+    <style>
+      :root { color-scheme: dark; --bg: #0b0b0d; --card-bg: #16161a; --border: rgba(255,255,255,0.08); --text: #f2f2f5; --text-dim: #9a9aa4; --accent: #5b9dff; --accent-text: #06101f; }
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: var(--bg); overflow: hidden; }
+      body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); }
+      #app { position: fixed; inset: 0; }
+      #landing { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px;
+        background: radial-gradient(120% 120% at 50% 20%, #1a1a20 0%, var(--bg) 70%); }
+      #landing.hidden { display: none; }
+      .card { width: 100%; max-width: 400px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 26px 22px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5); text-align: center; }
+      .card h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+      .card p { margin: 0 0 18px; color: var(--text-dim); font-size: 14px; line-height: 1.5; }
+      #start-camera { display: block; width: 100%; padding: 14px 18px; font-size: 16px; font-weight: 600; color: var(--accent-text);
+        background: var(--accent); border: none; border-radius: 10px; cursor: pointer; }
+      #start-camera:disabled { opacity: 0.5; cursor: default; }
+      .settings { margin: 16px 0 0; padding: 12px 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; text-align: left; font-size: 12.5px; color: var(--text-dim); }
+      .settings label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; }
+      .settings input[type=number] { width: 72px; background: #0b0b0d; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; }
+      .settings input[type=file] { max-width: 200px; font-size: 11px; }
+      .settings select, .settings input[type=text] { max-width: 170px; background: #0b0b0d; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 11.5px; }
+      .settings button.link-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11.5px; padding: 0; text-decoration: underline; }
+      #landing-status { margin-top: 10px; font: 11.5px ui-monospace, monospace; color: var(--text-dim); min-height: 1.4em; }
+      .help { margin-top: 12px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+      .links { margin-top: 12px; font-size: 12.5px; }
+      .links a { color: var(--text-dim); text-decoration: none; border-bottom: 1px dotted currentColor; margin: 0 6px; }
+    </style>
+  </head>
+  <body>
+    <noscript>Reality Editor requires JavaScript and a browser with camera access (getUserMedia).</noscript>
+    <div id="app"></div>
+    <div id="landing">
+      <div class="card">
+        <h1>Reality Editor</h1>
+        <p>Edit the room in front of any camera. Point a webcam or phone at the floor; spawn, drag, and delete objects with the mouse or a finger.</p>
+        <button id="start-camera" disabled>Start camera</button>
+        <div class="settings">
+          <label>Camera height above floor (m) <input id="cam-height" type="number" step="0.05" min="0.3" max="2.5" /></label>
+          <label>Vertical field of view (deg) <input id="cam-fov" type="number" step="1" min="25" max="110" /></label>
+          <label>Or use a video file <input id="cam-file" type="file" accept="video/*" /></label>
+          <label>Camera device
+            <select id="cam-device"><option value="">auto (facing mode)</option></select>
+          </label>
+          <label><button type="button" id="cam-device-refresh" class="link-btn">Refresh devices</button></label>
+          <label>Stereo mode (ZED)
+            <select id="cam-stereo-mode">
+              <option value="vga">VGA (672x376/eye)</option>
+              <option value="hd720">HD720 (1280x720/eye)</option>
+              <option value="hd1080">HD1080 (1920x1080/eye)</option>
+            </select>
+          </label>
+          <label>ZED serial <input id="cam-serial" type="text" placeholder="ZED serial" value="25491304" /></label>
+          <label><input id="cam-zed-sdk" type="checkbox" /> ZED SDK bridge <input id="cam-bridge-url" type="text" placeholder="ws://localhost:8765" value="ws://localhost:8765" /></label>
+        </div>
+        <div id="landing-status"></div>
+        <div class="help">Drag to move objects along the floor, wheel to lift, two fingers to scale and turn. Press <b>d</b> for diagnostics.</div>
+        <div class="links"><a href="/">Headset app</a><a href="/sim.html">Simulator</a></div>
+      </div>
+    </div>
+    <script type="module" src="/src/camera/entry.ts"></script>
+  </body>
+</html>

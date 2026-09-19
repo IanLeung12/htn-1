@@ -24,6 +24,13 @@ import type { EditableObject, Pose, ProxyShape, SceneSnapshot, Vec3 } from './ty
 import { distance } from './math';
 
 export interface PhysicsOptions {
+  /**
+   * Horizontal surfaces support an object whose footprint overlaps their box grown by this
+   * margin. Estimated surface extents (depth cameras, RANSAC) stop at the last observed point,
+   * e.g. a desk box ends where the sensor's minimum range starts; without a margin an object
+   * placed just past that edge falls through the desk. Default 0.15 m.
+   */
+  supportMarginM?: number;
   /** Fixed physics step, ms. Default 1000/60. */
   stepMs?: number;
   /** Max fixed substeps run per step() call. Default 4. */
@@ -90,6 +97,7 @@ export function createProxyPhysics(opts?: PhysicsOptions): ProxyPhysics {
   const sleepSteps = opts?.sleepSteps ?? 10;
   const wakeMoveEpsilonM = opts?.wakeMoveEpsilonM ?? 0.001;
   const moveReportEpsilonM = opts?.moveReportEpsilonM ?? 0.0005;
+  const supportMarginM = opts?.supportMarginM ?? 0.15;
 
   const bodies = new Map<string, Body>();
   let accumulatorMs = 0;
@@ -229,7 +237,8 @@ export function createProxyPhysics(opts?: PhysicsOptions): ProxyPhysics {
       for (const s of Object.values(snapshot.surfaces)) {
         if (s.orientation !== 'horizontal') continue;
         if (s.aabb.max.y > before + 1e-6) continue; // must already be at/below the object
-        if (minX > s.aabb.max.x || maxX < s.aabb.min.x || minZ > s.aabb.max.z || maxZ < s.aabb.min.z) continue;
+        const m = s.label === 'floor' ? 0 : supportMarginM;
+        if (minX > s.aabb.max.x + m || maxX < s.aabb.min.x - m || minZ > s.aabb.max.z + m || maxZ < s.aabb.min.z - m) continue;
         if (s.aabb.max.y > supportY) supportY = s.aabb.max.y;
       }
 
