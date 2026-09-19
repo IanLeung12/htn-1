@@ -61,6 +61,8 @@ async function main(): Promise<void> {
   if (source === 'camera' || source === 'url' || source === 'file' || source === 'stereo' || source === 'zed-sdk') config.source = source;
   const bridge = params.get('bridge') ?? readStorage('bridgeUrl');
   if (bridge) config.bridgeUrl = bridge;
+  const zedConf = params.get('zedconf');
+  if (zedConf) config.zedMinConfidence = Math.max(0, Math.min(255, Number(zedConf)));
   const url = params.get('url');
   if (url) {
     config.url = url;

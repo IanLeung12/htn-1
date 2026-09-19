@@ -39,11 +39,11 @@ declare global {
   }
 }
 
-export function createZedSdkBackend(config: Pick<CameraAppConfig, 'bridgeUrl' | 'fovY' | 'cameraHeightM'>): ZedSdkBackend {
+export function createZedSdkBackend(config: Pick<CameraAppConfig, 'bridgeUrl' | 'fovY' | 'cameraHeightM' | 'zedMinConfidence'>): ZedSdkBackend {
   const client = new ZedBridgeClient({ url: config.bridgeUrl ?? DEFAULT_BRIDGE_URL });
   const frameSource = new ZedSdkFrameSource(client, { fovY: config.fovY });
   const poseSource = new ZedSdkPoseSource(client, { cameraHeightM: config.cameraHeightM });
-  const depthEstimator = new ZedSdkDepthEstimator(client, { getPose: () => poseSource.pose });
+  const depthEstimator = new ZedSdkDepthEstimator(client, { getPose: () => poseSource.pose, minConfidence: config.zedMinConfidence });
   let lastCorrectionAt = -Infinity;
   const backend: ZedSdkBackend = {
     client,

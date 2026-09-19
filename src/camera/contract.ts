@@ -249,6 +249,8 @@ export interface CameraAppConfig {
   stereo?: 'sbs';
   /** WebSocket URL of tools/zed-bridge/server.py for source 'zed-sdk' (default ws://localhost:8765). */
   bridgeUrl?: string;
+  /** ZED SDK bridge: minimum confidence (0..255) a depth pixel needs; lower keeps more SDK fill-mode pixels. */
+  zedMinConfidence?: number;
 }
 
 export const DEFAULT_CAMERA_CONFIG: Readonly<CameraAppConfig> = {
