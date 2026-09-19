@@ -30,6 +30,11 @@ import { PlateRenderer } from '@/render/plates';
 import { ShellRenderer } from '@/render/shell';
 import { InXRHud, DomHud, GuideOverlay } from '@/render/hud';
 import { InteractionController } from './interaction';
+import { createProxyPhysics } from '@/core/physics';
+import { createPhysicsBridge } from './physics-bridge';
+import { installVoiceAndMenu } from './voice-install';
+import { createDiagnostics, tryUpdateTargetFrameRate } from '@/render/diagnostics';
+import type { DiagnosticsState } from '@/render/diagnostics';
 import { RegionManager } from './regions';
 import { INACTIVE_GUIDE, makeActiveGuide, planCaptureViewpoints, wrapSourceForGuide } from './guide';
 import { createCapturePipeline } from '@/capture';
@@ -119,6 +124,57 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   scene.add(shell.occluderGroup, shell.visibleGroup);
 
   const interaction = new InteractionController(store);
+
+  // Proxy physics: fixed-step settle/collide on compact proxies; moves are committed
+  // through the store as system intents (no undo pollution), never from inside physics.
+  const physics = createProxyPhysics();
+  const physicsBridge = createPhysicsBridge(store, physics, conditions);
+
+  // Voice is a convenience layer over the same resolver; the hand menu mirrors the HUD buttons.
+  const voiceAndMenu = installVoiceAndMenu({
+    store,
+    interaction,
+    scene,
+    input,
+    camera,
+    conditions,
+    captureCleanPlate: (id) => captureCleanPlate(id),
+    spawnPrimitive: (kind) => spawnPrimitive(kind === 'cube' ? 'box' : 'sphere'),
+    setMode: (mode) =>
+      store.dispatch(
+        { intent: { kind: 'setMode', mode }, source: 'voice', issuedAt: performance.now(), basedOnVersion: store.current.version },
+        conditions(),
+      ),
+    speak: !headless,
+  });
+
+  // On-device diagnostics panel (feature report, frame rate, counts, perf); DOM writes are throttled inside.
+  const diagnostics = createDiagnostics();
+  if (!headless) diagnostics.attach(container);
+  const diagState: DiagnosticsState = {
+    xrPresent: typeof navigator !== 'undefined' && !!navigator.xr,
+    arSupported: null,
+    inSession: false,
+    featureReport: null,
+    referenceSpaceType: null,
+    frameRate: null,
+    supportedFrameRates: null,
+    targetFrameRateRequest: 'not-attempted',
+    handTrackingAvailable: false,
+    planeCount: 0,
+    meshCount: 0,
+    depthAgeMs: Infinity,
+    qualityTier: quality.decision.tier,
+    perfP50: 0,
+    perfP95: 0,
+    perfP99: 0,
+    qualityHistory: quality.history,
+  };
+  if (diagState.xrPresent) {
+    navigator.xr!.isSessionSupported('immersive-ar').then((ok) => { diagState.arSupported = ok; }).catch(() => { diagState.arSupported = false; });
+  }
+  let lastDiagAt = -Infinity;
+  let frameRateRequested = false;
 
   const capture = createCapturePipeline();
 
@@ -312,8 +368,9 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     const snapshot = store.current;
     const cond = conditions();
 
-    interaction.hoveredId = interaction.hoveredId; // no-op keep lint happy about ordering
     interaction.update(input.state, cond);
+    physicsBridge.update(now);
+    voiceAndMenu.update(now);
     views.hoveredId = interaction.hoveredId;
     views.selectedId = interaction.selectedId;
     views.grabbedId = interaction.selectedId;
@@ -333,6 +390,31 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     shell.update(store.current, sceneUnderstanding.latestGlobalMeshes);
     // Floor is at y=0 in local-floor space (see docs/testing.md's IWER coordinate-frame note).
     guideOverlay.update(guide, 0);
+
+    if (now - lastDiagAt > 250) {
+      lastDiagAt = now;
+      const session = frame ? renderer.xr.getSession() : null;
+      diagState.inSession = inSession;
+      diagState.featureReport = features;
+      diagState.referenceSpaceType = session ? 'local-floor' : null;
+      diagState.frameRate = session?.frameRate ?? null;
+      diagState.supportedFrameRates = session?.supportedFrameRates ? Array.from(session.supportedFrameRates) : null;
+      if (session && !frameRateRequested) {
+        frameRateRequested = true;
+        void tryUpdateTargetFrameRate(session, 90).then((r) => { diagState.targetFrameRateRequest = r; });
+      }
+      diagState.handTrackingAvailable = input.state.left.active || input.state.right.active;
+      diagState.planeCount = Object.keys(store.current.surfaces).length;
+      diagState.meshCount = sceneUnderstanding.latestGlobalMeshes.length;
+      diagState.depthAgeMs = depth.state.ageMs;
+      diagState.qualityTier = quality.decision.tier;
+      const ps = perf.stats('frameMs');
+      diagState.perfP50 = ps.p50;
+      diagState.perfP95 = ps.p95;
+      diagState.perfP99 = ps.p99;
+      diagState.qualityHistory = quality.history;
+      diagnostics.update(diagState);
+    }
 
     // Rendering order (see xr/depth.ts): shell first (already added to scene
     // before objects), depth occlusion mesh second, editable objects last.
@@ -429,7 +511,9 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     get guide(): CaptureGuide {
       return guide;
     },
+    voice: voiceAndMenu.voice,
     dispose(): void {
+      voiceAndMenu.dispose();
       void exitAR();
       disposeRenderer();
       views.dispose();

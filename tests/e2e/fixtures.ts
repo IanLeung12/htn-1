@@ -73,7 +73,7 @@ function installTestHelpers(): void {
       tier: 'A',
       tierConfidence: 1,
       envelope: { center: pose.position, radius: 3, maxAngle: Math.PI },
-      physical: { massKg: 0.3, friction: 0.5, restitution: 0.2, kinematic: false },
+      physical: { massKg: 0.3, friction: 0.5, restitution: 0.2, kinematic: true /* proxy physics would drop a mid-air test cube; tests opt in via overrides */ },
       approved: true,
       visible: true,
       ...overrides,

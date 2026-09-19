@@ -195,7 +195,9 @@ export function createResolver(opts?: ResolverOptions): TransactionResolver {
     }
 
     // --- delete-specific plate/envelope checks --------------------------
-    if (intent.kind === 'delete' && object) {
+    // Only physical objects reveal a background when hidden; spawned/imported
+    // objects can always be deleted (their tier still gates via TIER_CAPABILITIES).
+    if (intent.kind === 'delete' && object && object.origin === 'physical') {
       const plateCheck = findPlateFor(object, conditions.headPose, minDeleteCoverage);
       if (!plateCheck.ok) {
         if (plateCheck.reason === 'no_background_evidence') {

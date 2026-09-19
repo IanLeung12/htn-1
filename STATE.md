@@ -35,7 +35,10 @@ Last updated: 2026-09-19 (session 1, integration pass)
 | E2E tests (Playwright + IWER) | 18 pass, 0 skipped |
 | Region state machine wired into the app | done (`src/app/regions.ts`; regions created from tracked surfaces, driven every frame, obstruction/fallback tested e2e) |
 | Multi-viewpoint guided capture in the app | done (`src/app/guide.ts`; 4-viewpoint arc + 3 off-path verification, `AppHandle.guide` UI state rendered by the HUD) |
-| Proxy physics (settle, collide) | todo |
+| Proxy physics (settle, collide) | done, wired; system moves skip undo |
+| Voice commands + hand menu | done, wired; deterministic grammar over the resolver |
+| Diagnostics panel, HTTPS dev, manifest | done (`npm run dev:https`, docs/device.md) |
+| Frame-loop allocation audit | done (docs/perf-audit.md, alloc e2e spec) |
 | Device validation on Quest 3 | blocked: no headset |
 
 ## Feasibility gates (from canonical architecture) mapped to tests
@@ -92,6 +95,8 @@ Last updated: 2026-09-19 (session 1, integration pass)
   objects (a lamp on the table) with it; otherwise depth still sees the object.
 - Grab release must commit the previewed pose, not the stale current pose.
 - Persistence debounce needs a max wait because previews commit every frame.
+- Deleting a spawned/imported object needs no background plate (it hides nothing real).
+- Proxy physics drops mid-air objects, so e2e test objects default to kinematic.
 
 ## Open questions / risks
 

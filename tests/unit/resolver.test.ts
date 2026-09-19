@@ -314,3 +314,18 @@ describe('resolver', () => {
     expect(result2.ok).toBe(true);
   });
 });
+
+describe('delete of non-physical objects', () => {
+  it('allows deleting a spawned object with no background plates', () => {
+    const resolver = createResolver();
+    const obj = makeObject({ id: 'spawned-1', origin: 'spawned', background: [], tier: 'A', approved: true });
+    const snapshot = makeSnapshot({ objects: { [obj.id]: obj } });
+    const result = resolver.resolve(
+      snapshot,
+      { intent: { kind: 'delete', objectId: obj.id }, source: 'voice', issuedAt: 0, basedOnVersion: snapshot.version },
+      makeConditions(),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.snapshot.objects[obj.id]!.visible).toBe(false);
+  });
+});
