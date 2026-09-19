@@ -12,9 +12,6 @@ export default defineConfig({
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         sim: fileURLToPath(new URL('./sim.html', import.meta.url)),
       },
-      output: {
-        manualChunks: { three: ['three'] },
-      },
     },
   },
 });
