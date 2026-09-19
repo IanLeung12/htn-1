@@ -277,3 +277,11 @@ full writeup with citations to the exact `.d.ts`/`.js` files)
   for state rather than assuming exactly one frame has passed), but it's worth knowing if a
   future spec needs a guarantee that at least one frame has actually rendered before
   `enterAR()`'s promise settles.
+
+
+## Concurrency note
+
+The Playwright config uses `reuseExistingServer: true` on port 5173. Two suites running at the
+same time (for example from two git worktrees) will silently share one dev server and test the
+wrong tree. Run suites serially, or point a second checkout at another port in both
+`vite.config.ts` and `playwright.config.ts` for the duration of the run.
