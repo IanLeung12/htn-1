@@ -138,23 +138,27 @@ export function detectVolumeAtPixel(
   let sx = Math.floor(px);
   let sy = Math.floor(py);
   if (seed.y - support.y < minAbove) {
-    let found = false;
-    outer: for (let r = 1; r <= 6 && !found; r++) {
+    // Clicked the support (or the object's base at support height): take the HIGHEST point
+    // within a 12 px ring that stands above the support, so a 4 cm object still seeds.
+    let bestAbove = 0;
+    for (let r = 1; r <= 12; r++) {
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
           const p = pickFromMap(map, px + dx, py + dy, frame);
-          if (p && p.y - support.y >= minAbove && Math.hypot(p.x - seed.x, p.z - seed.z) <= radius) {
+          if (!p) continue;
+          const above = p.y - support.y;
+          if (above >= minAbove && above > bestAbove && Math.hypot(p.x - seed.x, p.z - seed.z) <= radius) {
+            bestAbove = above;
             sx = Math.floor(px + dx);
             sy = Math.floor(py + dy);
-            found = true;
-            break outer;
           }
         }
       }
+      if (bestAbove > 0 && r >= 6) break; // found something close enough
     }
-    trace.seedMoved = found;
-    if (!found) {
+    trace.seedMoved = bestAbove > 0;
+    if (bestAbove === 0) {
       trace.reason = 'on support, nothing above nearby';
       return null;
     }
