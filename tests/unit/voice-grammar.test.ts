@@ -45,6 +45,40 @@ describe('parseCommand - simple intents', () => {
   });
 });
 
+describe('parseCommand - catalog asset spawning', () => {
+  it('resolves "spawn/add/create/put a <catalog name>" to spawnAsset, by name or alias', () => {
+    const snapshot = makeSnapshot();
+    expect(parseCommand('spawn a chair', snapshot, ctx())).toEqual({ kind: 'spawnAsset', entryId: 'chair', label: 'Chair' });
+    expect(parseCommand('add a vase', snapshot, ctx())).toEqual({ kind: 'spawnAsset', entryId: 'vase', label: 'Vase' });
+    expect(parseCommand('create a lamp', snapshot, ctx())).toEqual({ kind: 'spawnAsset', entryId: 'lamp', label: 'Lamp' });
+    expect(parseCommand('put a wicker basket', snapshot, ctx())).toEqual({ kind: 'spawnAsset', entryId: 'basket', label: 'Basket' });
+    // alias, not the canonical name
+    expect(parseCommand('spawn a candle holder', snapshot, ctx())).toEqual({ kind: 'spawnAsset', entryId: 'lamp', label: 'Lamp' });
+  });
+
+  it('keeps spawning primitives (cube/sphere) working alongside catalog assets', () => {
+    const snapshot = makeSnapshot();
+    expect(parseCommand('spawn a cube', snapshot, ctx())).toEqual({ kind: 'spawn', shape: 'cube' });
+    expect(parseCommand('spawn a sphere', snapshot, ctx())).toEqual({ kind: 'spawn', shape: 'sphere' });
+  });
+
+  it('does not hijack "put <existing object> on <surface>" even when the object name matches a catalog entry', () => {
+    const table = makeSurface({
+      id: 'surface-table',
+      label: 'table',
+      aabb: { min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 0.5, z: 1 } },
+    });
+    const chair = makeObject({ id: 'chair-1', userName: 'Chair' });
+    const snapshot = makeSnapshot({ objects: { [chair.id]: chair }, surfaces: { [table.id]: table } });
+    const cmd = parseCommand('put the chair on the table', snapshot, ctx());
+    expect(cmd?.kind).toBe('placeOn');
+  });
+
+  it('returns null for an unrecognized catalog name', () => {
+    expect(parseCommand('spawn a spaceship', makeSnapshot(), ctx())).toBeNull();
+  });
+});
+
 describe('parseCommand - object targeting', () => {
   it('resolves delete/remove/hide by userName, case-insensitively', () => {
     const cube = makeObject({ id: 'cube-1', userName: 'Cube' });

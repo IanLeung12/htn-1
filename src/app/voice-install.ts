@@ -14,6 +14,7 @@
  *      const voiceAndMenu = installVoiceAndMenu({
  *        store, interaction, scene, input, camera, conditions,
  *        captureCleanPlate, spawnPrimitive,
+ *        spawnAsset: (entryId) => spawnAsset(entryId),
  *        setMode: (mode) => store.dispatch(
  *          { intent: { kind: 'setMode', mode }, source: 'voice', issuedAt: performance.now(), basedOnVersion: store.current.version },
  *          conditions(),
@@ -28,6 +29,45 @@
  * Also add `voice: voiceAndMenu.voice` to the returned `AppHandle`, and call
  * `voiceAndMenu.dispose()` inside `handle.dispose()`. main.ts is owned by
  * another agent, so those edits are documented here rather than applied.
+ *
+ * ---------------------------------------------------------------------------
+ * Catalog wiring (src/app/catalog.ts, src/app/spawn.ts, src/app/catalog-fit.ts):
+ *
+ * 3. Near `spawnPrimitive`, add:
+ *
+ *      function spawnAsset(entryId: string): string | null {
+ *        return spawnCatalogObject2(store, entryId, poseFromMatrix(camera), conditions());
+ *      }
+ *      // where spawnCatalogObject2 wraps src/app/spawn.ts's spawnAsset(store, entryId, headPose, conditions):
+ *      import { spawnAsset as spawnCatalogObject2 } from './spawn';
+ *      import { CATALOG } from './catalog';
+ *      import { fitProxiesToBounds } from './catalog-fit';
+ *
+ * 4. Right after `const views = new ObjectViews();`, wire the measured-bounds
+ *    callback so catalog objects' proxies match their loaded geometry:
+ *
+ *      views.onModelLoaded = (objectId, bounds) => {
+ *        const obj = store.current.objects[objectId];
+ *        if (!obj) return;
+ *        const fitted = fitProxiesToBounds(obj, bounds);
+ *        store.dispatch(
+ *          {
+ *            intent: {
+ *              kind: 'setProxies',
+ *              objectId,
+ *              interaction: fitted.interactionProxy,
+ *              collision: fitted.collisionProxy,
+ *              occlusion: fitted.occlusionProxy,
+ *            },
+ *            source: 'system',
+ *            issuedAt: performance.now(),
+ *            basedOnVersion: store.current.version,
+ *          },
+ *          conditions(),
+ *        );
+ *      };
+ *
+ * 5. Add `catalog: CATALOG` and `spawnAsset` to the returned `AppHandle`.
  * ---------------------------------------------------------------------------
  */
 import * as THREE from 'three';
@@ -47,6 +87,14 @@ export interface VoiceAndMenuDeps {
   conditions(): RuntimeConditions;
   captureCleanPlate(objectId: string): Promise<{ tier: string; coverage: number }>;
   spawnPrimitive(kind: 'cube' | 'sphere'): void;
+  /**
+   * Optional: spawn a catalog asset (src/app/catalog.ts) by entry id, e.g.
+   * from `AppHandle.spawnAsset` (src/app/spawn.ts's `spawnCatalogObject`
+   * wired through main.ts). Optional so callers that have not wired the
+   * catalog yet (or tests) keep compiling; "spawn a chair" is then a
+   * recognized-but-inert voice command.
+   */
+  spawnAsset?(entryId: string): void;
   setMode(mode: VisualMode): void;
   /** Disable speechSynthesis (tests, headless simulator runs). Default true. */
   speak?: boolean;
@@ -91,6 +139,7 @@ export function installVoiceAndMenu(deps: VoiceAndMenuDeps): VoiceAndMenuHandle 
         void deps.captureCleanPlate(id);
       },
       spawn: (shape) => deps.spawnPrimitive(shape),
+      spawnAsset: (entryId) => deps.spawnAsset?.(entryId),
       explainLast: () => explainLastText(deps.interaction),
       list: () => listEditableText(deps.store),
       setMode: deps.setMode,

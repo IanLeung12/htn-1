@@ -5,6 +5,7 @@
  */
 import type { PerfTracker, QualityManager, SceneStore, FreshnessBus } from '@/core/api';
 import type { Pose, QualityDecision, SceneSnapshot, Vec3 } from '@/core/types';
+import type { CatalogEntry } from './catalog';
 
 /**
  * Guided multi-viewpoint capture UI state (see src/app/guide.ts). Rendered by
@@ -85,6 +86,18 @@ export interface AppHandle {
    * feature-detect it (see tests/e2e/voice.spec.ts).
    */
   voice?: { submitText(text: string): void; listening: boolean };
+  /**
+   * Spawnable 3D asset catalog (src/app/catalog.ts). Optional: undefined
+   * until main.ts wires it in, same convention as `voice`/`guide`.
+   */
+  readonly catalog?: readonly CatalogEntry[];
+  /**
+   * Spawn a catalog asset by entry id (src/app/spawn.ts's `spawnAsset`), 0.7m
+   * in front of the current head pose. Returns the new object's id, or null
+   * if the entry id is unrecognized or the resolver rejected the spawn.
+   * Optional: undefined until main.ts wires it in (see src/app/spawn.ts).
+   */
+  spawnAsset?(entryId: string): string | null;
 }
 
 export type StartApp = (options?: AppOptions) => Promise<AppHandle>;
