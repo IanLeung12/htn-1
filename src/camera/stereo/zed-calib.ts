@@ -315,7 +315,11 @@ export function stereoRectify(
 
   // Rotate T into the shared halfway frame to find the new baseline direction.
   const tHalf = matVec3(RhalfRight, T);
-  const e = normalize3(tHalf);
+  // New x axis along the baseline, with the sign chosen so it points the same way as the
+  // original +x (OpenCV's `uu[idx] = c > 0 ? 1 : -1`): T = [-baseline, ...] points to -x, and
+  // using it unsigned rotates both rectified images by 180 degrees (disparity sign flips,
+  // depth map upside down against the displayed eye).
+  const e = normalize3(tHalf[0] < 0 ? [-tHalf[0], -tHalf[1], -tHalf[2]] : tHalf);
   const zAxis: [number, number, number] = [0, 0, 1];
   let e2 = cross3(zAxis, e);
   if (norm3(e2) < 1e-9) e2 = [0, 1, 0]; // baseline parallel to z (degenerate for a horizontal stereo rig)

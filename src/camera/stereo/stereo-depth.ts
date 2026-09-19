@@ -35,6 +35,11 @@ import { resampleDepth } from '../depth/fit';
 import { registerStereoDepth, type CreateStereoDepthOptions, type RectifyMaps, type StereoDepthEstimator, type StereoDepthStats } from './contract';
 
 const DEFAULT_WORK_WIDTH = 336;
+/** Eye-order auto-detection: both orderings are matched on these frames (then every AUTO_SWAP_PERIOD frames). */
+const AUTO_SWAP_WARMUP_FRAMES = 2;
+const AUTO_SWAP_PERIOD = 120;
+/** The other ordering must beat the current one's LR-consistent fraction by this factor to switch. */
+const AUTO_SWAP_HYSTERESIS = 1.25;
 const DEFAULT_MAX_DISPARITY_AT_336 = 64;
 /** Rows searched either side when the input is not rectified. */
 const UNRECTIFIED_ROW_SEARCH = 2;
@@ -433,6 +438,20 @@ export function atlasLayout(groups: number, w: number, h: number, maxSize: numbe
 // Estimator
 // ---------------------------------------------------------------------------
 
+export interface WebGL2StereoDepthOptions extends CreateStereoDepthOptions {
+  /**
+   * Which half is the left eye. 'auto' (default) matches both orderings on the first frames and
+   * periodically, keeping the one with more left-right-consistent pixels: a pair fed in the wrong
+   * order has negative disparities and matches almost nothing. `true` forces swapped input.
+   */
+  swapEyes?: boolean | 'auto';
+}
+
+export interface WebGL2StereoDepthStats extends StereoDepthStats {
+  /** True when the estimator treats `frame.right` as the LEFT eye (see `swapEyes`). */
+  eyesSwapped: boolean;
+}
+
 export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
   readonly status: DepthStatus = {
     state: 'idle',
@@ -444,7 +463,7 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
     lastPublishedAt: -Infinity,
     fitMode: 'none',
   };
-  readonly stats: StereoDepthStats;
+  readonly stats: WebGL2StereoDepthStats;
   latestDisparity: { data: Float32Array; width: number; height: number } | undefined = undefined;
   /** Per-pixel confidence of the newest map (1 consistent, 0.5 filled hole, 0 invalid). */
   latestConfidence: Float32Array | undefined = undefined;
@@ -464,15 +483,19 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
   private readonly maxDisparityOpt: number | undefined;
   private readonly fxScale: () => number;
   private readonly fallback: DepthEstimator | null;
+  private readonly swapMode: boolean | 'auto';
+  private swapped = false;
 
-  constructor(private readonly opts: CreateStereoDepthOptions) {
+  constructor(private readonly opts: WebGL2StereoDepthOptions) {
     this.workWidth = opts.workWidth ?? DEFAULT_WORK_WIDTH;
     this.maxDisparityOpt = opts.maxDisparity;
     this.fxScale = opts.fxScale ?? (() => 1);
     this.fallback = opts.fallback ?? null;
     this.ownsContext = !opts.gl;
     this.gl = opts.gl ?? null;
-    this.stats = { workWidth: this.workWidth, workHeight: 0, maxDisparity: this.disparityRangeFor(this.workWidth), validFraction: 0, lastMs: 0, rectified: false, backend: 'none' };
+    this.swapMode = opts.swapEyes ?? 'auto';
+    this.swapped = this.swapMode === true;
+    this.stats = { workWidth: this.workWidth, workHeight: 0, maxDisparity: this.disparityRangeFor(this.workWidth), validFraction: 0, lastMs: 0, rectified: false, backend: 'none', eyesSwapped: this.swapped };
   }
 
   /** Disparity range for a work width: 64 at 336 px, scaled linearly, rounded up to a multiple of 4. */
@@ -537,7 +560,15 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
     if (!calib) return false;
     const t0 = performance.now();
     try {
-      const result = this.run(gl, programs, frame, calib.rectifyMaps, calib.fxPx * (frame.width / calib.eyeWidth) * this.fxScale(), calib.baselineM);
+      const fxWork = calib.fxPx * (frame.width / calib.eyeWidth) * this.fxScale();
+      let result = this.run(gl, programs, frame, calib.rectifyMaps, fxWork, calib.baselineM, this.swapped);
+      if (this.swapMode === 'auto' && (this.status.frames < AUTO_SWAP_WARMUP_FRAMES || this.status.frames % AUTO_SWAP_PERIOD === 0)) {
+        const other = this.run(gl, programs, frame, calib.rectifyMaps, fxWork, calib.baselineM, !this.swapped);
+        if (other.validFraction > result.validFraction * AUTO_SWAP_HYSTERESIS) {
+          this.swapped = !this.swapped;
+          result = other;
+        }
+      }
       const ms = performance.now() - t0;
       this.map = {
         width: frame.width,
@@ -563,6 +594,7 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
       this.stats.validFraction = result.validFraction;
       this.stats.lastMs = ms;
       this.stats.rectified = calib.rectifyMaps !== null;
+      this.stats.eyesSwapped = this.swapped;
       return true;
     } catch (err) {
       this.status.error = `stereo: ${err instanceof Error ? err.message : String(err)}`;
@@ -649,12 +681,13 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
     rectifyMaps: RectifyMaps | null,
     fxWork: number,
     baselineM: number,
+    swapped: boolean,
   ): { metric: Float32Array; disparity: Float32Array; confidence: Float32Array; validFraction: number } {
     const { width, height } = frame;
     const b = this.ensureBuffers(gl, width, height);
     const maps = this.ensureMaps(gl, rectifyMaps);
     const rowSearch = maps ? 0 : UNRECTIFIED_ROW_SEARCH;
-    const eyes: [Uint8ClampedArray, Uint8ClampedArray] = [frame.rgba, frame.right as Uint8ClampedArray];
+    const eyes: [Uint8ClampedArray, Uint8ClampedArray] = swapped ? [frame.right as Uint8ClampedArray, frame.rgba] : [frame.rgba, frame.right as Uint8ClampedArray];
 
     gl.bindVertexArray(this.vao);
     gl.disable(gl.DEPTH_TEST);
@@ -813,7 +846,7 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
   }
 }
 
-export function createStereoDepthEstimator(opts: CreateStereoDepthOptions): StereoDepthEstimator {
+export function createStereoDepthEstimator(opts: WebGL2StereoDepthOptions): WebGL2StereoDepthEstimator {
   return new WebGL2StereoDepthEstimator(opts);
 }
 
