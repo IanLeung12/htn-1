@@ -463,6 +463,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       memoryPressure: false,
       handConfidence: Math.max(input.state.left.confidence, input.state.right.confidence),
       registrationErrorM: 0,
+      appMs: performance.now() - now,
     };
     perf.push(sample);
     quality.observe(sample);

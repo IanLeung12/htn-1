@@ -31,6 +31,8 @@ test('frame trace with 8 objects has no severe hitch, and perf stats are recorde
   const samples = await evalApp(() => window.__realityEditor!.perf.samples().map((s) => s.frameMs));
   const maxFrameMs = Math.max(...samples.slice(-TARGET_FRAMES));
   const stats = await evalApp(() => window.__realityEditor!.perf.stats('frameMs'));
+  const appMs = await evalApp(() => { const a = window.__realityEditor!.perf.samples().map((s) => s.appMs ?? 0).sort((x, y) => x - y); return { p50: a[Math.floor(a.length * 0.5)], p95: a[Math.floor(a.length * 0.95)], max: a[a.length - 1] }; });
+  console.log('APPMS', JSON.stringify(appMs));
 
   const outPath = path.join(process.cwd(), 'test-results', 'perf.json');
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -41,6 +43,7 @@ test('frame trace with 8 objects has no severe hitch, and perf stats are recorde
         objectCount: OBJECT_COUNT,
         targetFrames: TARGET_FRAMES,
         stats,
+        appMs,
         maxFrameMsInWindow: maxFrameMs,
         note: 'Emulated (software GL) frame timings; indicative only, not representative of on-device Quest 3 performance.',
       },

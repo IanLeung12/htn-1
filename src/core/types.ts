@@ -303,6 +303,8 @@ export interface FrameSample {
   frameMs: number;
   /** Optional GPU estimate (ms) if available. */
   gpuMs?: number;
+  /** Time spent inside the app's frame callback (input, resolver, physics, view diffs), ms. */
+  appMs?: number;
   depthAgeMs: number;
   trackingOk: boolean;
   droppedFrames: number;
