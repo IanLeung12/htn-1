@@ -82,8 +82,9 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
   `planeMinExtentM` (0.4 m larger side) filter is what keeps it a volume, not a table.
 - Point cloud density matters: stride 4 on 160x120 left ~20 points on a 0.3 m box at 2 m
   (below `clusterMinCount`); the app uses stride 2 on 320 px grabs (~16k points,
-  ~200 ms per RANSAC run on the main thread at 400 ms intervals - move to a worker if it
-  shows in `loop p95`).
+  ~200 ms per RANSAC run). That run now happens in a Web Worker
+  (`surfaces/worker.ts`, `WorkerSurfaceEstimator`), one map in flight, results applied on
+  the next frame; without Worker support it runs inline.
 - `#app` is `position: fixed`; forcing `relative` collapsed it to 0 height (black overlay).
 - Floor surfaces carry a +-0.01 m aabb pad (same as XR planes): physics settles a 0.08 m
   cube at y = 0.09.
@@ -93,7 +94,7 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,
    `ransacThresholdM`, `depthScale` live; record good defaults here.
-2. Move RANSAC/clustering into a worker if `loop p95` suffers on laptops.
+2. Record RANSAC worker latency from the owner's laptop in this file.
 3. Multi-frame appearance for moved real objects (accumulate frames as the camera pans in
    `?pose=visual`); hull from several shots.
 4. E2E for tracking loss (shifted fake video) and for `?pose=visual`.

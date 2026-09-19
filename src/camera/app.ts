@@ -52,7 +52,7 @@ import { DEFAULT_CAMERA_CONFIG } from './contract';
 import { createFrameSource } from './frame-source';
 import { createPoseSource } from './pose';
 import { rayPlaneY } from './surfaces/floor-prior';
-import { DepthSurfaceEstimator } from './surfaces/depth-surfaces';
+import { WorkerSurfaceEstimator } from './surfaces/worker-estimator';
 import { PointerInputAdapter, intersectPlaneY, type PointerRay } from './input/pointer';
 import { StaticPoseSource } from './pose/static';
 import type { VisualPoseSource } from './pose/visual';
@@ -174,8 +174,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // ---- Estimators -----------------------------------------------------
   const frameSource = createFrameSource(config);
   const poseSource = createPoseSource(config);
-  // Floor prior until estimated depth is confident enough for RANSAC planes/volumes.
-  const surfaceEstimator = new DepthSurfaceEstimator({ cameraHeightM: config.cameraHeightM, getTuning: () => tuning.value });
+  // Floor prior until estimated depth is confident enough for RANSAC planes/volumes (computed in a worker).
+  const surfaceEstimator = new WorkerSurfaceEstimator({ cameraHeightM: config.cameraHeightM, getTuning: () => tuning.value });
   const depthEstimator = createDepthEstimator(config, () => surfaceEstimator.cameraHeightM);
   const staticBase: StaticPoseSource | null = (() => {
     const base = (poseSource as VisualPoseSource).base as unknown;
@@ -997,6 +997,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       voice.dispose();
       pointer.dispose();
       depthEstimator.dispose();
+      surfaceEstimator.dispose();
       poseSource.dispose();
       frameSource.stop();
       views.dispose();
