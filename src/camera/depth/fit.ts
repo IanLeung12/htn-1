@@ -131,3 +131,24 @@ export function fitConfidence(fit: InverseDepthFit, meanInverse: number): number
   const residualScore = Math.max(0, 1 - rel / 0.25);
   return Math.max(0, Math.min(1, 0.5 * fit.inlierFraction + 0.5 * residualScore));
 }
+
+/**
+ * Last-resort scale anchor when no plane is available: assume the bottom
+ * band of the image looks at the support surface at `anchorDepthM` and the
+ * model's shift is zero (v = a / z). Confidence is low by construction.
+ */
+export function fitInverseDepthBand(inverse: Float32Array, width: number, height: number, anchorDepthM: number, bandFraction = 0.2): InverseDepthFit | null {
+  const rows = Math.max(1, Math.floor(height * bandFraction));
+  const vals: number[] = [];
+  for (let y = height - rows; y < height; y++) {
+    for (let x = 0; x < width; x += 2) {
+      const v = inverse[y * width + x] as number;
+      if (Number.isFinite(v) && v > 0) vals.push(v);
+    }
+  }
+  if (vals.length < 16 || !(anchorDepthM > 0)) return null;
+  vals.sort((p, q) => p - q);
+  const median = vals[Math.floor(vals.length / 2)] as number;
+  if (!(median > 0)) return null;
+  return { a: median * anchorDepthM, b: 0, inlierFraction: 0.2, rms: 0, samples: vals.length };
+}

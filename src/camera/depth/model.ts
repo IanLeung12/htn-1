@@ -12,7 +12,7 @@ import type { Pose } from '@/core/types';
 import { quatRotateVec3 } from '@/core/math';
 import type { CameraIntrinsics, DepthEstimator, DepthMap, DepthSample, DepthStatus, GrabbedFrame } from '../contract';
 import { fillFloorDepth, toleranceForEstimatedDepth } from './prior';
-import { fitConfidence, fitInverseDepthToFloor, inverseToMetric, resampleDepth } from './fit';
+import { fitConfidence, fitInverseDepthBand, fitInverseDepthToFloor, inverseToMetric, resampleDepth, type InverseDepthFit } from './fit';
 
 export const DEFAULT_DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small';
 /** Longest side handed to the model (multiple of the 14 px ViT patch after the processor's own resize). */
@@ -38,7 +38,7 @@ interface Pending {
 }
 
 export class ModelDepthEstimator implements DepthEstimator {
-  readonly status: DepthStatus = { state: 'idle', backend: 'none', modelId: null, lastInferenceMs: 0, error: null };
+  readonly status: DepthStatus = { state: 'idle', backend: 'none', modelId: null, lastInferenceMs: 0, error: null, frames: 0, lastPublishedAt: -Infinity, fitMode: 'none' };
   private map: DepthMap | undefined = undefined;
   private worker: Worker | null = null;
   private pending: Pending | null = null;
@@ -48,6 +48,8 @@ export class ModelDepthEstimator implements DepthEstimator {
   private readonly device: 'webgpu' | 'wasm' | 'auto';
   private readonly floorY: () => number;
   private floorScratch: Float32Array | null = null;
+  private lastFit: InverseDepthFit | null = null;
+  private lastFitConfidence = 0;
   /** Live adjustments (src/camera/tuning.ts): metric = fitted * scale + shift, then EMA-smoothed against the previous map. */
   adjust = { scale: 1, shiftM: 0, smoothing: 0 };
 
@@ -136,13 +138,50 @@ export class ModelDepthEstimator implements DepthEstimator {
     if (!this.floorScratch || this.floorScratch.length !== width * height) this.floorScratch = new Float32Array(width * height);
     const floor = this.floorScratch;
     const hits = fillFloorDepth(floor, width, height, pending.pose, pending.fovY, pending.aspect, this.floorY());
-    const fit = hits > 0 ? fitInverseDepthToFloor(inverse, floor) : null;
+    // Metric scale: never stop publishing. Anchor on the ground plane when it is in view;
+    // otherwise keep the previous map's scale (temporal fit), then the last good fit, then
+    // a bottom-band anchor. Each step lowers the confidence the map is tagged with.
+    let fit: InverseDepthFit | null = hits > 0 ? fitInverseDepthToFloor(inverse, floor) : null;
+    let mode = 'floor';
+    let confidence = 0;
+    let sumInv = 0;
+    for (let i = 0; i < inverse.length; i++) sumInv += inverse[i] as number;
+    const meanInverse = sumInv / Math.max(1, inverse.length);
+    if (fit) {
+      confidence = fitConfidence(fit, meanInverse);
+      this.status.error = null;
+    } else {
+      const prev = this.map && this.map.width === width && this.map.height === height ? this.map : null;
+      if (prev) {
+        fit = fitInverseDepthToFloor(inverse, prev.metric, { stride: 2 });
+        mode = 'temporal';
+        if (fit) confidence = Math.min(prev.confidence, 0.6) * Math.max(0.5, fit.inlierFraction);
+      }
+      if (!fit && this.lastFit) {
+        fit = this.lastFit;
+        mode = 'last-fit';
+        confidence = Math.min(0.4, this.lastFitConfidence);
+      }
+      if (!fit) {
+        // Bottom of the frame looks at the support surface: its distance from a camera at
+        // height h pitched by p, given the half field of view f, is h / sin(f - p).
+        const fwd = quatRotateVec3(pending.pose.rotation, { x: 0, y: 0, z: -1 });
+        const pitch = Math.asin(Math.max(-1, Math.min(1, fwd.y)));
+        const down = Math.max(0.15, pending.fovY / 2 - pitch);
+        const h = Math.max(0.1, pending.pose.position.y - this.floorY());
+        fit = fitInverseDepthBand(inverse, width, height, h / Math.sin(down));
+        mode = 'band';
+        confidence = 0.3;
+      }
+      this.status.error = fit ? `no ground in view; scale from ${mode}` : 'metric fit failed';
+    }
     if (!fit) {
-      // Cannot scale to metres (no floor in view): keep the previous map; the fallback stays honest.
-      this.status.error = 'metric fit failed (no floor in view)';
+      this.status.fitMode = 'none';
       return;
     }
-    this.status.error = null;
+    this.lastFit = fit;
+    this.lastFitConfidence = confidence;
+    this.status.fitMode = mode;
     const metric = new Float32Array(width * height);
     inverseToMetric(inverse, fit, metric);
     const { scale, shiftM, smoothing } = this.adjust;
@@ -157,9 +196,8 @@ export class ModelDepthEstimator implements DepthEstimator {
       }
       metric[i] = m > 0 ? m : 0;
     }
-    let sum = 0;
-    for (let i = 0; i < inverse.length; i++) sum += inverse[i] as number;
-    const confidence = fitConfidence(fit, sum / inverse.length);
+    this.status.frames += 1;
+    this.status.lastPublishedAt = performance.now();
     this.map = {
       width,
       height,

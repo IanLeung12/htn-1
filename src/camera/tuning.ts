@@ -50,7 +50,7 @@ export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
   depthScale: 1,
   depthShiftM: 0,
   depthSmoothing: 0.3,
-  ransacThresholdM: 0.03,
+  ransacThresholdM: 0.05,
   ransacIterations: 200,
   planeMinInliers: 100,
   planeMinExtentM: 0.4,

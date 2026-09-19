@@ -93,6 +93,12 @@ export interface DepthStatus {
   lastInferenceMs: number;
   /** Why the estimator is unavailable, if it is. */
   error: string | null;
+  /** Number of depth maps published so far. */
+  frames: number;
+  /** performance.now() of the newest published map; -Infinity if none. */
+  lastPublishedAt: number;
+  /** How the newest map was scaled to metres ('floor', 'temporal', 'last-fit', 'band', 'analytic', 'injected', 'none'). */
+  fitMode: string;
 }
 
 export interface DepthEstimator {

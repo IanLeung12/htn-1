@@ -44,6 +44,9 @@ export interface CameraDiagnosticsState {
   surfaceRunMs: number;
   /** Median optical-flow magnitude between grabbed frames (px). */
   motionPx: number;
+  depthFrames: number;
+  depthPublishedAgoMs: number;
+  depthFitMode: string;
 }
 
 function fmtMs(v: number): string {
@@ -98,6 +101,7 @@ export class CameraDiagnostics {
       `frame    h ${s.cameraHeightM.toFixed(2)} m  fovY ${s.fovYDeg.toFixed(0)} deg`,
       `depth    ${s.depthState} ${s.depthBackend}${s.depthModel ? ` ${s.depthModel.split('/').pop()}` : ''}`,
       `         infer ${fmtMs(s.depthInferenceMs)} age ${fmtMs(s.depthAgeMs)} conf ${s.depthConfidence.toFixed(2)}`,
+      `         frames ${s.depthFrames} published ${fmtMs(s.depthPublishedAgoMs)} ago  scale ${s.depthFitMode}`,
       `ground   conf ${s.floorConfidence.toFixed(2)}  est pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}`,
       `scene    surfaces ${s.surfaceCount} (tables ${s.tables}, walls ${s.walls})  volumes ${s.volumeCount}  ransac ${s.surfaceRunMs.toFixed(0)} ms  motion ${s.motionPx.toFixed(1)} px`,
       `tier cap ${s.tierCap} (estimated depth)  quality tier ${s.qualityTier}`,

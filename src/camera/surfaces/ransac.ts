@@ -304,6 +304,10 @@ export function ransacPlane(points: Float32Array, opts: RansacPlaneOptions = {})
   }
   if (finalInliers.length < minInliers) return null;
 
+  // Extents from the 3rd..97th percentile of inlier coordinates so a handful of
+  // mis-scaled far points cannot stretch a desk into a 7 m slab.
+  trimExtents(points, finalInliers, extentMin, extentMax);
+
   const centroid = { x: 0, y: 0, z: 0 };
   for (const idx of finalInliers) {
     const p = pointAt(points, idx);
@@ -324,6 +328,70 @@ export function ransacPlane(points: Float32Array, opts: RansacPlaneOptions = {})
     extentMin,
     extentMax,
   };
+}
+
+function trimExtents(points: Float32Array, inliers: number[], extentMin: Vec3, extentMax: Vec3): void {
+  if (inliers.length < 20) return;
+  const lo = Math.floor(inliers.length * 0.03);
+  const hi = Math.min(inliers.length - 1, Math.ceil(inliers.length * 0.97));
+  const xs = new Float32Array(inliers.length);
+  const ys = new Float32Array(inliers.length);
+  const zs = new Float32Array(inliers.length);
+  for (let i = 0; i < inliers.length; i++) {
+    const idx = (inliers[i] as number) * 3;
+    xs[i] = points[idx] as number;
+    ys[i] = points[idx + 1] as number;
+    zs[i] = points[idx + 2] as number;
+  }
+  xs.sort();
+  ys.sort();
+  zs.sort();
+  extentMin.x = xs[lo] as number;
+  extentMax.x = xs[hi] as number;
+  extentMin.y = ys[lo] as number;
+  extentMax.y = ys[hi] as number;
+  extentMin.z = zs[lo] as number;
+  extentMax.z = zs[hi] as number;
+}
+
+/**
+ * Merge near-coplanar horizontal fits (height within `heightTolM`, XZ boxes
+ * overlapping): RANSAC on noisy monocular depth splits one bed into layers a
+ * few centimetres apart. Inliers are unioned, extents unioned, centroid
+ * weighted by inlier count. Result sorted lowest first.
+ */
+export function mergeHorizontalPlanes(fits: PlaneFit[], heightTolM: number): PlaneFit[] {
+  const out: PlaneFit[] = [];
+  const sorted = fits.slice().sort((a, b) => a.centroid.y - b.centroid.y);
+  for (const fit of sorted) {
+    const target = out.find(
+      (o) =>
+        Math.abs(o.centroid.y - fit.centroid.y) <= heightTolM &&
+        o.extentMin.x <= fit.extentMax.x && o.extentMax.x >= fit.extentMin.x &&
+        o.extentMin.z <= fit.extentMax.z && o.extentMax.z >= fit.extentMin.z,
+    );
+    if (!target) {
+      out.push({ ...fit, inliers: Uint32Array.from(fit.inliers), extentMin: { ...fit.extentMin }, extentMax: { ...fit.extentMax } });
+      continue;
+    }
+    const na = target.inliers.length;
+    const nb = fit.inliers.length;
+    const n = na + nb;
+    target.centroid = {
+      x: (target.centroid.x * na + fit.centroid.x * nb) / n,
+      y: (target.centroid.y * na + fit.centroid.y * nb) / n,
+      z: (target.centroid.z * na + fit.centroid.z * nb) / n,
+    };
+    target.d = -(target.normal.x * target.centroid.x + target.normal.y * target.centroid.y + target.normal.z * target.centroid.z);
+    const merged = new Uint32Array(n);
+    merged.set(target.inliers, 0);
+    merged.set(fit.inliers, na);
+    target.inliers = merged;
+    target.inlierFraction += fit.inlierFraction;
+    target.extentMin = { x: Math.min(target.extentMin.x, fit.extentMin.x), y: Math.min(target.extentMin.y, fit.extentMin.y), z: Math.min(target.extentMin.z, fit.extentMin.z) };
+    target.extentMax = { x: Math.max(target.extentMax.x, fit.extentMax.x), y: Math.max(target.extentMax.y, fit.extentMax.y), z: Math.max(target.extentMax.z, fit.extentMax.z) };
+  }
+  return out.sort((a, b) => a.centroid.y - b.centroid.y);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +452,12 @@ export function findHorizontalPlanes(points: Float32Array, opts: FindHorizontalP
   return fits.slice().sort((a, b) => a.centroid.y - b.centroid.y);
 }
 
-/** Repeated RANSAC for near-vertical planes (|normal.y| < sin(15deg)). */
+/**
+ * Repeated RANSAC for near-vertical planes (|normal.y| < sin(15deg)). Each
+ * slot tries 8 horizontal normal hints (22.5 degrees apart, 15 degree cone)
+ * and keeps the fit with the most inliers - a free sample among points
+ * dominated by furniture sides rarely lands on the wall, a hinted one does.
+ */
 export function findVerticalPlanes(points: Float32Array, opts: FindPlanesOptions = {}): PlaneFit[] {
   const n = Math.floor(points.length / 3);
   if (n === 0) return [];
@@ -392,33 +465,82 @@ export function findVerticalPlanes(points: Float32Array, opts: FindPlanesOptions
   const maxNormalYAbs = Math.sin(DEG15);
   const mask = opts.candidateMask ? new Uint8Array(opts.candidateMask) : new Uint8Array(n).fill(1);
   const results: PlaneFit[] = [];
+  const cone = DEG15;
 
   for (let k = 0; k < maxPlanes; k++) {
-    // No single normalHint for "vertical" (any horizontal direction qualifies), so
-    // sample freely and reject fits whose normal isn't within the vertical band.
     let best: PlaneFit | null = null;
-    let attempt = 0;
-    while (attempt < 4 && !best) {
+    for (let h = 0; h < 8; h++) {
+      const angle = (h * Math.PI) / 8;
       const fit = ransacPlane(points, {
-        iterations: opts.iterations ?? 200,
+        iterations: Math.max(40, Math.floor((opts.iterations ?? 200) / 4)),
         thresholdM: opts.thresholdM,
         minInliers: opts.minInliers,
+        normalHint: { x: Math.sin(angle), y: 0, z: Math.cos(angle) },
+        maxNormalAngleRad: cone,
         candidateMask: mask,
-        seed: (opts.seed ?? 1) + k * 97 + attempt * 13,
+        seed: (opts.seed ?? 1) + k * 97 + h * 13,
       });
-      attempt += 1;
-      if (!fit) break;
-      if (Math.abs(fit.normal.y) < maxNormalYAbs) {
-        best = fit;
-      }
-      // else: this attempt's dominant plane wasn't vertical; retry with a
-      // different seed (don't mutate the shared mask for a rejected fit).
+      if (!fit || Math.abs(fit.normal.y) > maxNormalYAbs + 1e-6) continue;
+      if (!best || fit.inliers.length > best.inliers.length) best = fit;
     }
     if (!best) break;
     results.push(best);
     for (const idx of best.inliers) mask[idx] = 0;
   }
   return results;
+}
+
+/**
+ * Best-first plane extraction: repeatedly fit the single largest plane among
+ * the points no earlier plane claimed (no normal constraint), classify it by
+ * its normal, mask its inliers, repeat. Finding planes in size order is what
+ * keeps a loose threshold from slicing a wall into "horizontal" strips: the
+ * whole wall (thousands of points) wins before any 0.1 m strip of it can.
+ * Fits that are neither horizontal nor vertical, or whose in-plane extent is
+ * a sliver (< `sliverM`), are discarded (their points stay masked).
+ */
+export function extractPlanes(
+  points: Float32Array,
+  opts: FindPlanesOptions & { sliverM?: number } = {},
+): { horizontal: PlaneFit[]; vertical: PlaneFit[] } {
+  const n = Math.floor(points.length / 3);
+  const horizontal: PlaneFit[] = [];
+  const vertical: PlaneFit[] = [];
+  if (n === 0) return { horizontal, vertical };
+  const maxPlanes = opts.maxPlanes ?? 8;
+  const mask = opts.candidateMask ? new Uint8Array(opts.candidateMask) : new Uint8Array(n).fill(1);
+  const sliverM = opts.sliverM ?? Math.max(0.1, 3 * (opts.thresholdM ?? 0.03));
+  const cosH = Math.cos(DEG15);
+  const sinV = Math.sin(DEG15);
+  for (let k = 0; k < maxPlanes; k++) {
+    const fit = ransacPlane(points, {
+      iterations: opts.iterations ?? 200,
+      thresholdM: opts.thresholdM,
+      minInliers: opts.minInliers,
+      candidateMask: mask,
+      seed: (opts.seed ?? 1) + k * 97,
+    });
+    if (!fit) break;
+    for (const idx of fit.inliers) mask[idx] = 0;
+    const ny = fit.normal.y;
+    if (Math.abs(ny) >= cosH) {
+      if (ny < 0) {
+        fit.normal = { x: -fit.normal.x, y: -fit.normal.y, z: -fit.normal.z };
+        fit.d = -fit.d;
+      }
+      const ex = fit.extentMax.x - fit.extentMin.x;
+      const ez = fit.extentMax.z - fit.extentMin.z;
+      if (Math.min(ex, ez) < sliverM) continue;
+      horizontal.push(fit);
+    } else if (Math.abs(ny) <= sinV) {
+      const ey = fit.extentMax.y - fit.extentMin.y;
+      const exz = Math.hypot(fit.extentMax.x - fit.extentMin.x, fit.extentMax.z - fit.extentMin.z);
+      if (Math.min(ey, exz) < sliverM) continue;
+      vertical.push(fit);
+    }
+  }
+  horizontal.sort((a, b) => a.centroid.y - b.centroid.y);
+  return { horizontal, vertical };
 }
 
 // ---------------------------------------------------------------------------

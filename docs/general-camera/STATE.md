@@ -90,6 +90,21 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
   cube at y = 0.09.
 - The pointer's world point must not be read before any pointer event (`right.active`).
 
+## Real-camera feedback (owner, Chrome, laptop webcam 640x480, WebGPU depth 227 ms)
+
+- Bug 1 (fixed): the model estimator stopped publishing once the ground-anchored scale
+  fit failed (camera level, floor out of frame); RANSAC kept refitting a stale map. Now it
+  never stops: scale falls back to a temporal fit against the previous map, then the last
+  good fit, then a bottom-band anchor (`fitInverseDepthBand`), each with lower confidence;
+  diagnostics show `frames`, `published ... ago`, and the scale mode.
+- Bug 2 (fixed): one surface split into layers 2-12 cm apart. Planes are now extracted
+  best-first without a normal constraint (`extractPlanes`; a loose threshold otherwise
+  slices a wall into "horizontal" strips), layered horizontals merge within
+  max(0.08, 2 x threshold) with XZ overlap, default `ransacThresholdM` 0.05, extents are
+  the 3-97 percentile of inliers, points beyond 6 m are ignored.
+- Bug 3 (fixed): 20 degree roll from a small noisy fit. Attitude is learned only from planes
+  with > 2000 inliers and confidence > 0.6, smoothed with a 2 s time constant.
+
 ## Next steps
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,

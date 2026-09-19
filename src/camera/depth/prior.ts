@@ -38,7 +38,7 @@ export function fillFloorDepth(out: Float32Array, width: number, height: number,
 }
 
 export class PlanePriorDepthEstimator implements DepthEstimator {
-  readonly status: DepthStatus = { state: 'ready', backend: 'analytic', modelId: 'floor-plane-prior', lastInferenceMs: 0, error: null };
+  readonly status: DepthStatus = { state: 'ready', backend: 'analytic', modelId: 'floor-plane-prior', lastInferenceMs: 0, error: null, frames: 0, lastPublishedAt: -Infinity, fitMode: 'analytic' };
   latest: DepthMap | undefined = undefined;
 
   constructor(private readonly floorY: () => number = () => 0) {}
@@ -64,6 +64,8 @@ export class PlanePriorDepthEstimator implements DepthEstimator {
       timestamp: frame.timestamp,
     };
     this.status.lastInferenceMs = performance.now() - t0;
+    this.status.frames += 1;
+    this.status.lastPublishedAt = performance.now();
     return true;
   }
 
@@ -84,7 +86,7 @@ export class PlanePriorDepthEstimator implements DepthEstimator {
 }
 
 export class NoDepthEstimator implements DepthEstimator {
-  readonly status: DepthStatus = { state: 'unavailable', backend: 'none', modelId: null, lastInferenceMs: 0, error: null };
+  readonly status: DepthStatus = { state: 'unavailable', backend: 'none', modelId: null, lastInferenceMs: 0, error: null, frames: 0, lastPublishedAt: -Infinity, fitMode: 'none' };
   readonly latest = undefined;
   async start(): Promise<void> {
     /* nothing to load */

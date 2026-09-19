@@ -117,6 +117,9 @@ const TARGET_FRAME_MS = 1000 / 60;
 const CAPTURE_WIDTH = 320;
 const DEPTH_SUBMIT_INTERVAL_MS = 150;
 const GRAB_INTERVAL_MS = 120;
+/** Attitude is only learned from planes at least this large (points), smoothed with this time constant. */
+const ATTITUDE_MIN_INLIERS = 2000;
+const ATTITUDE_TAU_MS = 2000;
 /** Farthest a spawned object is placed from the camera along the floor (m). */
 const SPAWN_MAX_M = 2.0;
 /** Clean-plate shots requested from a moving (non-static) camera; see tier-cap.ts's agreement rule. */
@@ -271,6 +274,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   let lastGrabAt = -Infinity;
   let lastCorrectionAt = -Infinity;
   let lastTuningSyncAt = -Infinity;
+  let lastAttitudeApplyAt = -Infinity;
   let lastSurfaceRegisterAt = -Infinity;
   let floorRegistered = false;
   const localizedAnchors = new Set<string>();
@@ -438,6 +442,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     walls: 0,
     surfaceRunMs: 0,
     motionPx: 0,
+    depthFrames: 0,
+    depthPublishedAgoMs: Infinity,
+    depthFitMode: 'none',
   };
   const diagnostics = new CameraDiagnostics(container, !headless);
   const tuningPanel = new TuningPanel(container, tuning, { visible: false });
@@ -824,9 +831,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       lastCorrectionAt = correction.at;
       diagState.estPitchDeg = (correction.pitchRad * 180) / Math.PI;
       diagState.estRollDeg = (correction.rollRad * 180) / Math.PI;
-      // A static camera learns its attitude from the dominant plane (smoothed); sensors keep theirs.
-      if (staticBase && tuning.value.autoAttitude >= 1 && correction.confidence >= 0.3) {
-        const k = 0.35;
+      // A static camera learns its attitude from the dominant plane, but only from a LARGE,
+      // confident plane (a 20 degree roll from a laptop lying flat was a small noisy fit),
+      // smoothed with a 2 s time constant; sensors keep theirs.
+      if (staticBase && tuning.value.autoAttitude >= 1 && correction.confidence > 0.6 && correction.inliers > ATTITUDE_MIN_INLIERS) {
+        const dt = Number.isFinite(lastAttitudeApplyAt) ? now - lastAttitudeApplyAt : 400;
+        lastAttitudeApplyAt = now;
+        const k = 1 - Math.exp(-dt / ATTITUDE_TAU_MS);
         const pitch = staticBase.pitch + k * (correction.pitchRad - staticBase.pitch);
         const roll = staticBase.roll + k * (correction.rollRad - staticBase.roll);
         staticBase.setPitch(pitch);
@@ -904,6 +915,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.depthInferenceMs = ds.lastInferenceMs;
       diagState.depthAgeMs = depthAgeMs(now);
       diagState.depthConfidence = depthEstimator.latest?.confidence ?? 0;
+      diagState.depthFrames = ds.frames;
+      diagState.depthPublishedAgoMs = Number.isFinite(ds.lastPublishedAt) ? now - ds.lastPublishedAt : Infinity;
+      diagState.depthFitMode = ds.fitMode;
       diagState.floorConfidence = surfaceEstimator.surfaces[0]?.confidence ?? 0;
       diagState.surfaceCount = Object.keys(frameSnapshot.surfaces).length;
       diagState.volumeCount = surfaceEstimator.volumes.length;

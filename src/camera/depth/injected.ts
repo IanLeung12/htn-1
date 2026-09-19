@@ -11,7 +11,7 @@ import { resampleDepth } from './fit';
 import { toleranceForEstimatedDepth } from './prior';
 
 export class InjectableDepthEstimator implements DepthEstimator {
-  readonly status: DepthStatus = { state: 'ready', backend: 'analytic', modelId: 'injected', lastInferenceMs: 0, error: null };
+  readonly status: DepthStatus = { state: 'ready', backend: 'analytic', modelId: 'injected', lastInferenceMs: 0, error: null, frames: 0, lastPublishedAt: -Infinity, fitMode: 'injected' };
   latest: DepthMap | undefined = undefined;
 
   async start(): Promise<void> {
@@ -21,6 +21,8 @@ export class InjectableDepthEstimator implements DepthEstimator {
   /** Make `map` the newest depth; `timestamp` defaults to now so age checks pass. */
   inject(map: Omit<DepthMap, 'timestamp'> & { timestamp?: number }): void {
     this.latest = { ...map, timestamp: map.timestamp ?? performance.now() };
+    this.status.frames += 1;
+    this.status.lastPublishedAt = performance.now();
   }
 
   submit(): boolean {

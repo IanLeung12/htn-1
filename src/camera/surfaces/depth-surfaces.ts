@@ -31,7 +31,7 @@ import { aabbIntersects, distance, quatFromAxisAngle, quatMultiply, quatRotateVe
 import type { DepthMap, EstimatedSurface, SurfaceEstimator } from '@/camera/contract';
 import type { DetectedVolume } from '@/capture/contract';
 import { makeFloorSurface } from './floor-prior';
-import { clusterAbovePlane, depthToPoints, findHorizontalPlanes, findVerticalPlanes, ransacPlane, type PlaneFit } from './ransac';
+import { clusterAbovePlane, depthToPoints, extractPlanes, mergeHorizontalPlanes, ransacPlane, type PlaneFit } from './ransac';
 
 /** The subset of camera tuning this estimator consumes (see src/camera/tuning.ts). */
 export interface SurfaceTuning {
@@ -48,7 +48,7 @@ export interface SurfaceTuning {
 }
 
 export const DEFAULT_SURFACE_TUNING: Readonly<SurfaceTuning> = {
-  ransacThresholdM: 0.03,
+  ransacThresholdM: 0.05,
   ransacIterations: 200,
   planeMinInliers: 100,
   planeMinExtentM: 0.4,
@@ -92,10 +92,14 @@ export interface FrameCorrection {
   heightM: number;
   /** 0..1 from the plane's inlier fraction. */
   confidence: number;
+  /** Inlier count behind the estimate (the app only trusts large planes). */
+  inliers: number;
   at: Millis;
 }
 
 const FLOOR_MIN_INLIER_FRACTION = 0.1;
+/** Monocular depth beyond this is too uncertain to fit planes on. */
+const MAX_POINT_DEPTH_M = 6;
 const TABLE_MIN_OFFSET_M = 0.08;
 const TABLE_ID_MATCH_HEIGHT_M = 0.06;
 const TABLE_REGION_PAD_M = 0.1;
@@ -227,6 +231,8 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
   private lastProcessedDepthTimestamp: Millis = -Infinity;
   lastRunAt: Millis = -Infinity;
   lastStats: DepthSurfaceStats = { points: 0, floorInliers: 0, tables: 0, walls: 0, volumes: 0, runMs: 0 };
+  /** Raw plane fits of the last run (before extent filters), for diagnostics/tests. */
+  lastFits: { horizontal: PlaneFit[]; vertical: PlaneFit[] } = { horizontal: [], vertical: [] };
 
   constructor(opts: DepthSurfaceEstimatorOptions) {
     this.heightM = opts.cameraHeightM;
@@ -262,7 +268,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
 
     // 1. Camera-space cloud and the dominant support plane.
     const localMap: DepthMap = { ...depth, pose: { position: { x: 0, y: 0, z: 0 }, rotation: { ...IDENTITY_QUAT } } };
-    const points = depthToPoints(localMap, stride);
+    const points = depthToPoints(localMap, stride, MAX_POINT_DEPTH_M);
     const pointCount = Math.floor(points.length / 3);
     const ransacOpts = { thresholdM: tuning.ransacThresholdM, iterations: tuning.ransacIterations, minInliers: Math.max(20, Math.floor(tuning.planeMinInliers / 2)), seed: 7 };
     const dominant = ransacPlane(points, { ...ransacOpts, normalHint: { x: 0, y: 1, z: 0 }, maxNormalAngleRad: this.maxTiltRad });
@@ -278,7 +284,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       // Distance from the camera (origin in camera space) to the plane n.p + d = 0.
       const heightM = Math.abs(dominant.d);
       const confidence = Math.min(1, dominant.inlierFraction * 3);
-      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, at: now };
+      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, at: now };
       // World frame from the dominant plane: pitch/roll from its normal, y = 0 on the plane,
       // yaw from the reported pose (depth cannot observe heading).
       const yaw = this.yawOf(depth.pose);
@@ -294,12 +300,11 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     // 2. World-space cloud (dominant plane at y = 0 when found, else the reported pose).
     transformPoints(points, worldRotation, worldPosition);
 
-    const horizontal = findHorizontalPlanes(points, { ...ransacOpts, maxPlanes: 5, minInliers: tuning.planeMinInliers });
-    // Walls: search only among points no horizontal plane claimed, otherwise the
-    // ground dominates every random sample and a wall is rarely hit.
-    const nonHorizontal = new Uint8Array(pointCount).fill(1);
-    for (const fit of horizontal) for (const idx of fit.inliers) nonHorizontal[idx] = 0;
-    const vertical = findVerticalPlanes(points, { ...ransacOpts, maxPlanes: 3, minInliers: tuning.planeMinInliers, candidateMask: nonHorizontal });
+    // Best-first extraction (see ransac.ts extractPlanes), then merge layered horizontals.
+    const extracted = extractPlanes(points, { ...ransacOpts, maxPlanes: 8, minInliers: tuning.planeMinInliers });
+    const horizontal = mergeHorizontalPlanes(extracted.horizontal, Math.max(0.08, 2 * tuning.ransacThresholdM));
+    const vertical = extracted.vertical;
+    this.lastFits = { horizontal, vertical };
 
     // 3. Table surfaces: horizontal planes away from the ground with furniture-sized extent.
     const newTables: EstimatedSurface[] = [];
