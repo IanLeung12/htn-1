@@ -1,6 +1,6 @@
 # Reality Editor - Project State
 
-Last updated: 2026-09-19 (session 1, feature pass 4)
+Last updated: 2026-09-19 (session 1, feature pass 5)
 
 ## Decision log
 
@@ -45,6 +45,7 @@ Last updated: 2026-09-19 (session 1, feature pass 4)
 | Persistent room anchor, anchor-relative persistence | done (device relocalization untested) |
 | Two-hand move/yaw/scale with tier gating | done |
 | Captured object appearance for moved physical objects; captured-shell carve | done (moved table matches reference within 18/255) |
+| Captured-shell mode as tiled RGB-D room reconstruction (28 viewpoints, 1.5 m tiles, region-carved, 1.2 M vertex cap) | done (matches live view within 6/255 centre region) |
 | Review fixes (tracking signal, watchdog, one snapshot per frame, session guards, grab rules) | done |
 | Device validation on Quest 3 | blocked: no headset |
 
@@ -110,6 +111,17 @@ Last updated: 2026-09-19 (session 1, feature pass 4)
 - Projecting one clean-plate photo onto the object's box shows parallax error from other
   viewpoints; the fix is reprojecting the frame's RGB-D as a depth mesh clipped to the object's
   silhouette (stencil), which is what the capture doc predicted.
+
+## Suggested next steps
+
+1. Device validation on a Quest 3: feature report, depth texture format, hand confidence, anchor
+   relocalization, real frame budget (`docs/device.md`).
+2. Room reconstruction polish: multi-frame blending per tile, hole filling, higher camera
+   resolution when a real camera source exists.
+3. Guided capture UX on device: the HUD floor markers exist; a real walk-through has not been done.
+4. Oriented proxies for rotated real objects (carve/appearance filters assume axis-aligned boxes).
+5. Text-to-3D / asset generation as an offline job feeding the catalog (explicitly out of the
+   render loop per the architecture).
 
 ## Known limitations
 
