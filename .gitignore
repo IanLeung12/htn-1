@@ -6,3 +6,5 @@ playwright-report/
 .vite/
 *.log
 .DS_Store
+tools/zed-bridge/.venv/
+tools/zed-bridge/*.npz

@@ -57,6 +57,7 @@ import { SurfaceRegistry } from './surfaces/registry';
 import { SceneDebugOverlay } from './debug-overlay';
 import { ImpostorViews, isImpostorActive } from './impostor';
 import { ZedStereoFrameSource } from './stereo/zed-frame-source';
+import { createZedSdkBackend } from './zedsdk';
 import { loadZedCalibration } from './stereo/zed-calib';
 import { getStereoDepthFactory, type StereoCalibrationInput, type StereoDepthEstimator } from './stereo/contract';
 // Side effect: the WebGL2 census matcher registers itself with the stereo contract's factory.
@@ -207,15 +208,17 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // ---- Estimators -----------------------------------------------------
   // A ZED 2 (side-by-side UVC stereo) is a stereo source: its left eye is the passthrough,
   // both eyes feed the GPU stereo matcher, which replaces the monocular model.
-  const wantsStereo = config.source === 'stereo' || /zed/i.test(config.device ?? '') || (config.stereo === 'sbs' && !!config.url);
+  // ZED SDK bridge (src/camera/zedsdk): one WebSocket supplies the passthrough, SDK depth and SDK tracking.
+  const zedSdk = config.source === 'zed-sdk' ? createZedSdkBackend(config) : null;
+  const wantsStereo = !zedSdk && (config.source === 'stereo' || /zed/i.test(config.device ?? '') || (config.stereo === 'sbs' && !!config.url));
   const zedSerial = config.zedSerial ?? (wantsStereo ? '25491304' : undefined);
   const zedCalibration = wantsStereo && zedSerial ? await loadZedCalibration(zedSerial) : null;
   const stereoSource = wantsStereo
     ? new ZedStereoFrameSource({ fovY: config.fovY, deviceLabel: config.device ?? 'zed', mode: config.stereoMode ?? (config.stereo === 'sbs' ? 'hd720' : 'vga'), calibration: zedCalibration, url: config.stereo === 'sbs' ? config.url : undefined })
     : null;
-  const frameSource: FrameSource = stereoSource ?? createFrameSource(config);
+  const frameSource: FrameSource = zedSdk?.frameSource ?? stereoSource ?? createFrameSource(config);
   if (stereoSource) config.source = 'stereo';
-  const poseSource = createPoseSource(config);
+  const poseSource = zedSdk?.poseSource ?? createPoseSource(config);
   // Floor prior until estimated depth is confident enough for RANSAC planes/volumes (computed in a worker).
   const surfaceEstimator = new WorkerSurfaceEstimator({ cameraHeightM: config.cameraHeightM, getTuning: () => tuning.value });
   // The GPU matcher lives in its own module (src/camera/stereo/contract.ts describes it); when it
@@ -245,7 +248,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
           fallback: monocularFallback,
         })
       : null;
-  const depthEstimator: DepthEstimator = stereoDepth ?? (stereoSource ? (monocularFallback ?? createDepthEstimator({ depth: 'prior' }, () => 0)) : createDepthEstimator(config, () => surfaceEstimator.cameraHeightM));
+  const depthEstimator: DepthEstimator = zedSdk?.depthEstimator ?? stereoDepth ?? (stereoSource ? (monocularFallback ?? createDepthEstimator({ depth: 'prior' }, () => 0)) : createDepthEstimator(config, () => surfaceEstimator.cameraHeightM));
   const staticBase: StaticPoseSource | null = (() => {
     const base = (poseSource as VisualPoseSource).base as unknown;
     return base instanceof StaticPoseSource ? base : poseSource instanceof StaticPoseSource ? poseSource : null;
@@ -280,8 +283,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   container.style.overflow = 'hidden';
   container.style.background = '#000';
   // Stereo: show the LEFT eye (a canvas the source keeps updated), never the side-by-side video.
-  const video: HTMLElement = stereoSource ? stereoSource.display : frameSource.video;
-  if (stereoSource) {
+  const video: HTMLElement = zedSdk ? zedSdk.frameSource.display : stereoSource ? stereoSource.display : frameSource.video;
+  if (stereoSource || zedSdk) {
     frameSource.video.style.display = 'none';
     container.appendChild(frameSource.video);
   }
@@ -1120,6 +1123,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       if (stereoDepth) {
         const st = stereoDepth.stats;
         diagState.stereoLine = `stereo ${st.workWidth}x${st.workHeight} d0..${st.maxDisparity} valid ${(st.validFraction * 100).toFixed(0)}% ${st.lastMs.toFixed(0)} ms ${st.rectified ? 'rectified' : 'unrectified'}${stereoSource?.stereo?.calibrationId ? ` SN${stereoSource.stereo.calibrationId}` : ''}`;
+      } else if (zedSdk) {
+        diagState.stereoLine = zedSdk.statusLine();
       } else if (stereoSource) {
         diagState.stereoLine = `stereo source ${stereoSource.stereo?.eyeWidth ?? 0}x${stereoSource.stereo?.eyeHeight ?? 0}${stereoSource.calibration ? ` SN${stereoSource.calibration.serial ?? '?'} calibrated` : ' nominal'}; matcher not available, monocular fallback`;
       }
@@ -1132,7 +1137,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.walls = surfaceEstimator.lastStats.walls;
       diagState.surfaceRunMs = surfaceEstimator.lastStats.runMs;
       diagState.motionPx = visualPose?.motionPx ?? 0;
-      diagState.tierCap = depthEstimator.latest?.source === 'stereo' && (depthEstimator.latest.confidence ?? 0) >= 0.8 ? 'A' : depthEstimator.latest?.source === 'monocular' || depthEstimator.latest?.source === 'stereo' ? 'B' : 'C';
+      diagState.tierCap = (depthEstimator.latest?.source === 'stereo' || depthEstimator.latest?.source === 'zed-sdk') && (depthEstimator.latest.confidence ?? 0) >= 0.8 ? 'A' : depthEstimator.latest?.source === 'monocular' || depthEstimator.latest?.source === 'stereo' ? 'B' : 'C';
       diagState.qualityTier = quality.decision.tier;
       diagState.frameP95 = perf.stats('frameMs').p95;
       diagState.objectCount = Object.keys(frameSnapshot.objects).length;

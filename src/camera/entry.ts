@@ -2,7 +2,8 @@
  * camera.html entry: starts the general-camera backend (src/camera/app.ts).
  *
  * Query params:
- *   ?source=camera|url|file|stereo   frame source (default camera = getUserMedia)
+ *   ?source=camera|url|file|stereo|zed-sdk   frame source (default camera = getUserMedia)
+ *   ?bridge=ws://localhost:8765   for source=zed-sdk: tools/zed-bridge/server.py (docs/general-camera/zed-sdk.md)
  *   ?url=<video url>          for source=url
  *   ?headless=1               hide the HUD/diagnostics/landing card (Playwright)
  *   ?autostart=1              start the camera without a click (fake device / file)
@@ -57,7 +58,9 @@ async function main(): Promise<void> {
 
   const config: Partial<CameraAppConfig> = {};
   const source = params.get('source');
-  if (source === 'camera' || source === 'url' || source === 'file' || source === 'stereo') config.source = source;
+  if (source === 'camera' || source === 'url' || source === 'file' || source === 'stereo' || source === 'zed-sdk') config.source = source;
+  const bridge = params.get('bridge') ?? readStorage('bridgeUrl');
+  if (bridge) config.bridgeUrl = bridge;
   const url = params.get('url');
   if (url) {
     config.url = url;
@@ -185,6 +188,29 @@ async function main(): Promise<void> {
     serialInput.addEventListener('change', () => {
       writeStorage('zedSerial', serialInput.value);
     });
+  }
+
+  // "ZED SDK bridge" landing option: the sources are chosen when the app is constructed, so
+  // switching reloads the page with ?source=zed-sdk&bridge=<url> (persisted like the device).
+  const zedSdkCheckbox = document.getElementById('cam-zed-sdk') as HTMLInputElement | null;
+  const bridgeInput = document.getElementById('cam-bridge-url') as HTMLInputElement | null;
+  if (zedSdkCheckbox) {
+    zedSdkCheckbox.checked = config.source === 'zed-sdk';
+    if (bridgeInput) bridgeInput.value = config.bridgeUrl ?? 'ws://localhost:8765';
+    zedSdkCheckbox.addEventListener('change', () => {
+      const next = new URL(location.href);
+      if (zedSdkCheckbox.checked) {
+        const url = bridgeInput?.value || 'ws://localhost:8765';
+        writeStorage('bridgeUrl', url);
+        next.searchParams.set('source', 'zed-sdk');
+        next.searchParams.set('bridge', url);
+      } else {
+        next.searchParams.delete('source');
+        next.searchParams.delete('bridge');
+      }
+      location.assign(next.toString());
+    });
+    bridgeInput?.addEventListener('change', () => writeStorage('bridgeUrl', bridgeInput.value));
   }
 
   const fileInput = document.getElementById('cam-file') as HTMLInputElement | null;

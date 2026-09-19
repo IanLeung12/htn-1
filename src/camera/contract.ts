@@ -39,7 +39,7 @@ export interface GrabbedFrame {
   right?: Uint8ClampedArray;
 }
 
-export type FrameSourceKind = 'camera' | 'file' | 'url' | 'stereo';
+export type FrameSourceKind = 'camera' | 'file' | 'url' | 'stereo' | 'zed-sdk';
 
 export interface FrameSource {
   readonly kind: FrameSourceKind;
@@ -86,8 +86,9 @@ export interface StereoParams {
 // Depth
 // ---------------------------------------------------------------------------
 
-export type DepthBackend = 'webgpu' | 'wasm' | 'webgl2' | 'analytic' | 'none';
-export type DepthSource = 'sensor' | 'monocular' | 'plane-prior' | 'stereo';
+export type DepthBackend = 'webgpu' | 'wasm' | 'webgl2' | 'analytic' | 'bridge' | 'none';
+/** 'zed-sdk': measured by the ZED SDK through the local bridge (src/camera/zedsdk); treated like 'sensor' for tier caps. */
+export type DepthSource = 'sensor' | 'monocular' | 'plane-prior' | 'stereo' | 'zed-sdk';
 
 /**
  * Relative inverse depth from a monocular model plus the affine fit that maps
@@ -108,6 +109,8 @@ export interface DepthMap {
   fovY: number;
   aspect: number;
   timestamp: Millis;
+  /** Optional per-pixel confidence (0..255, 255 best) on the same grid; sensor-grade sources only. */
+  confidenceMap?: Uint8Array;
 }
 
 export interface DepthStatus {
@@ -158,7 +161,8 @@ export interface DepthSample {
 // Pose
 // ---------------------------------------------------------------------------
 
-export type PoseMode = 'static' | 'orientation' | 'visual';
+/** 'tracked': 6DoF from an external tracker (ZED SDK bridge). */
+export type PoseMode = 'static' | 'orientation' | 'visual' | 'tracked';
 
 export interface PoseQuality {
   mode: PoseMode;
@@ -237,6 +241,8 @@ export interface CameraAppConfig {
   zedSerial?: string;
   /** 'sbs' with source 'url'/'file': the video is a side-by-side stereo recording (ZED clip). */
   stereo?: 'sbs';
+  /** WebSocket URL of tools/zed-bridge/server.py for source 'zed-sdk' (default ws://localhost:8765). */
+  bridgeUrl?: string;
 }
 
 export const DEFAULT_CAMERA_CONFIG: Readonly<CameraAppConfig> = {
