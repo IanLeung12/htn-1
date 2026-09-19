@@ -132,6 +132,20 @@ describe('stereoRectify (HD mode of the shipped ZED 2 calibration)', () => {
     expect(Math.abs(sy - cy)).toBeLessThan(30);
   });
 
+  it('buildRectifyMap keeps the image orientation (top-left samples near the top-left, not rotated 180 degrees)', () => {
+    for (const [cam, Rn, P] of [[hd.left, result.R1, result.P1], [hd.right, result.R2, result.P2]] as const) {
+      const map = buildRectifyMap(cam, Rn, P, hd.width, hd.height);
+      expect(map[0]!).toBeLessThan(hd.width * 0.15);
+      expect(map[1]!).toBeLessThan(hd.height * 0.15);
+      const br = 2 * ((hd.height - 1) * hd.width + (hd.width - 1));
+      expect(map[br]!).toBeGreaterThan(hd.width * 0.85);
+      expect(map[br + 1]!).toBeGreaterThan(hd.height * 0.85);
+      // The rectifying rotations are small corrections: close to the identity, not a half turn.
+      expect(Rn[0]!).toBeGreaterThan(0.99);
+      expect(Rn[4]!).toBeGreaterThan(0.99);
+    }
+  });
+
   it('buildRectifyMap is finite everywhere on a coarse grid', () => {
     const rightMap = buildRectifyMap(hd.right, result.R2, result.P2, hd.width, hd.height);
     for (let y = 0; y < hd.height; y += 40) {
