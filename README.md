@@ -1,0 +1,39 @@
+# Reality Editor
+
+A live mixed-reality editor for a mostly static room, built for the Meta Quest 3 browser
+(WebXR `immersive-ar`). The physical world, hands, and people stay live through passthrough.
+A short guided capture registers the room and a small set of user-approved objects, which can
+then be moved, deleted, restored, replaced, and undone with believable proxy physics. The
+display loop never waits on capture, AI, or network work.
+
+Architecture and product rules live in the `reality-editor-*.md` documents. `STATE.md` tracks
+current status and decisions.
+
+## Quick start
+
+```bash
+npm install
+npm run dev          # http://localhost:5173/           device page (Quest browser)
+                     # http://localhost:5173/sim.html   desktop simulator (IWER emulator)
+npm test             # unit tests (core, capture)
+npm run test:e2e     # Playwright scenarios driving the simulator headlessly
+npm run check        # typecheck + unit tests + production build
+```
+
+To run on a Quest 3, serve over HTTPS (or use `adb reverse tcp:5173 tcp:5173` and open
+`http://localhost:5173/` in the headset browser) and press Enter AR.
+
+## Layout
+
+| Path | Role |
+|---|---|
+| `src/core/` | Pure TypeScript: versioned scene store, transaction resolver, region state machine, quality manager, perf tracker, persistence |
+| `src/xr/` | WebXR session, feature negotiation, hands/controllers, plane and mesh ingestion, anchors, environment depth |
+| `src/render/` | three.js views: object views, background plates, room shell tiles, occlusion, HUD |
+| `src/capture/` | Candidate discovery, clean-plate acquisition, verification sweep, editability tiers |
+| `src/app/` | `startApp()` wiring and the interaction transaction |
+| `src/sim/` | Headset simulator built on Meta IWER + synthetic environment module |
+| `tests/unit/` | vitest |
+| `tests/e2e/` | Playwright + IWER scenarios mapped to the feasibility gates |
+
+See `docs/module-ownership.md`, `docs/webxr-mapping.md`, and `docs/testing.md`.
