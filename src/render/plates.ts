@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import type { BackgroundPlate, EditableObject, Pose, SceneSnapshot } from '@/core/types';
 import type { PlateTextureRegistry } from '@/capture/contract';
 
-function insideEnvelope(headPose: Pose, plate: BackgroundPlate): boolean {
+export function insideEnvelope(headPose: Pose, plate: BackgroundPlate): boolean {
   const env = plate.envelope;
   const dx = headPose.position.x - env.center.x;
   const dy = headPose.position.y - env.center.y;
@@ -94,6 +94,10 @@ export class PlateRenderer {
     if (!entry) {
       const width = Math.max(plate.region.max.x - plate.region.min.x, 0.01);
       const depth = Math.max(plate.region.max.z - plate.region.min.z, 0.01);
+      // Lies flat in the region's XZ footprint (PlaneGeometry starts in the XY
+      // plane facing +Z; rotating -90 degrees about X lays it down facing +Y,
+      // i.e. a horizontal quad you look down onto - same convention used for
+      // shell tiles in src/render/shell.ts).
       const geometry = new THREE.PlaneGeometry(width, depth);
       geometry.rotateX(-Math.PI / 2);
       const material = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide });
@@ -110,7 +114,9 @@ export class PlateRenderer {
 
     const cx = (plate.region.min.x + plate.region.max.x) / 2;
     const cz = (plate.region.min.z + plate.region.max.z) / 2;
-    const y = plate.region.min.y;
+    // A hair above the region's top face so the plate never z-fights with the
+    // support surface it's resting on.
+    const y = plate.region.max.y + 0.002;
     entry.mesh.position.set(cx, y, cz);
     entry.outline.position.set(cx, y, cz);
 
@@ -125,6 +131,12 @@ export class PlateRenderer {
       const frame = this.textures.get(plate.textureRef);
       if (frame) {
         const tex = new THREE.DataTexture(frame.rgba, frame.width, frame.height, THREE.RGBAFormat);
+        // capture/plates.ts bakes texel row 0 at region.min.z (row index increases
+        // with world Z). The plate quad's V=0 edge sits at region.max.z (see the
+        // -90deg X rotation above: local plane V=0 -> world +Z after rotation), so
+        // flipping the texture on upload (row 0 -> V=1) lines the two up; without
+        // this the baked photo is mirrored across Z on the quad.
+        tex.flipY = true;
         tex.needsUpdate = true;
         tex.colorSpace = THREE.SRGBColorSpace;
         material.map = tex;

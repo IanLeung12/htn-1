@@ -63,6 +63,13 @@ export interface CleanPlateResult {
   object: EditableObject;
   /** Frames actually used. */
   framesUsed: number;
+  /**
+   * The captured frames themselves (subset of `CleanPlateRequest.viewpoints`
+   * that actually returned a frame), so the renderer can reproject the real
+   * background from the nearest one after the object moves/deletes (see
+   * `FrameStore` in ./frame-store and `BackgroundHull` in src/render).
+   */
+  frames: CameraFrame[];
 }
 
 export interface CapturePipeline {

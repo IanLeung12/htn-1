@@ -39,7 +39,10 @@ import { RegionManager } from './regions';
 import { INACTIVE_GUIDE, makeActiveGuide, planCaptureViewpoints, wrapSourceForGuide } from './guide';
 import { createCapturePipeline } from '@/capture';
 import { createPlateTextureRegistry } from '@/capture';
-import type { CameraFrameSource } from '@/capture/contract';
+import { createFrameStore, ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
+import type { CameraFrame, CameraFrameSource } from '@/capture/contract';
+import { BackgroundHull } from '@/render/background-hull';
+import { planRoomShellViewpoints } from './room-shell';
 
 declare global {
   interface Window {
@@ -120,8 +123,16 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   const plates = new PlateRenderer(textureRegistry);
   scene.add(plates.group);
 
-  const shell = new ShellRenderer();
+  // Shared with the capture pipeline: holds the raw frames behind a clean
+  // plate (per object id) and the room-shell orbit capture (ROOM_SHELL_FRAME_ID)
+  // so the renderer can reproject the real background from wherever the head is.
+  const frameStore = createFrameStore();
+
+  const shell = new ShellRenderer(frameStore);
   scene.add(shell.occluderGroup, shell.visibleGroup);
+
+  const backgroundHull = new BackgroundHull(frameStore);
+  scene.add(backgroundHull.group);
 
   const interaction = new InteractionController(store);
 
@@ -176,7 +187,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   let lastDiagAt = -Infinity;
   let frameRateRequested = false;
 
-  const capture = createCapturePipeline();
+  const capture = createCapturePipeline({ frameStore });
 
   const inXRHud = new InXRHud();
   scene.add(inXRHud.panel);
@@ -347,6 +358,22 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     }
   }
 
+  async function captureRoomShell(): Promise<{ framesCaptured: number }> {
+    const source = window.__cameraFrameSource ?? NO_CAMERA_SOURCE;
+    if (!source.available) {
+      frameStore.delete(ROOM_SHELL_FRAME_ID);
+      return { framesCaptured: 0 };
+    }
+    const plan = planRoomShellViewpoints(store.current);
+    const frames: CameraFrame[] = [];
+    for (const viewpoint of plan.viewpoints) {
+      const frame = await source.capture(viewpoint);
+      if (frame) frames.push(frame);
+    }
+    frameStore.put(ROOM_SHELL_FRAME_ID, frames);
+    return { framesCaptured: frames.length };
+  }
+
   // ---- Frame loop -----------------------------------------------------
   const tmpTarget = new THREE.Vector3();
 
@@ -387,6 +414,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     views.update(store.current);
     views.updatePreview(store.current, previewGroup);
     plates.update(store.current, cond.headPose);
+    backgroundHull.update(store.current, cond.headPose);
     shell.update(store.current, sceneUnderstanding.latestGlobalMeshes);
     // Floor is at y=0 in local-floor space (see docs/testing.md's IWER coordinate-frame note).
     guideOverlay.update(guide, 0);
@@ -500,6 +528,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     },
     runCandidateDiscovery,
     captureCleanPlate,
+    captureRoomShell,
     grab(objectId: string, hand: 'left' | 'right'): boolean {
       return interaction.grab(objectId, hand);
     },
@@ -519,6 +548,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       disposeRenderer();
       views.dispose();
       plates.dispose();
+      backgroundHull.dispose();
       shell.dispose();
       input.dispose();
       sceneUnderstanding.dispose();
