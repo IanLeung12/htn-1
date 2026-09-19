@@ -19,7 +19,7 @@ export default defineConfig(async ({ mode }) => {
       // @iwer/sem bundles its own three copy; force one instance so scene objects interoperate.
       dedupe: ['three'],
     },
-    server: { port: 5177, strictPort: true },
+    server: { port: 5179, strictPort: true },
     // transformers.js ships its own onnxruntime-web bundles and worker-loaded
     // wasm; pre-bundling breaks its dynamic imports. Used only by the camera
     // backend's depth worker (src/camera/depth/worker.ts).

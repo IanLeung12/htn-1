@@ -877,6 +877,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
 
     const committed = store.current;
     regionManager.tick(cond, committed.mode, quality.decision, [cond.headPose.position]);
+    regionManager.recoverTrackingFallbacks(cond);
 
     const frameSnapshot = store.current;
     views.update(frameSnapshot);

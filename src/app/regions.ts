@@ -211,6 +211,23 @@ export class RegionManager {
     }
   }
 
+  /**
+   * Additive (general-camera backend): once tracking is back, return regions
+   * that fell back with reason 'tracking_lost' to LIVE so edits resume. The
+   * core state machine's tick() never leaves that state on its own, and the
+   * baseline driver above only recovers its own 'user' fallbacks; on a webcam
+   * a bumped camera is routine, so the camera app calls this every frame.
+   * The WebXR path does not call it (behaviour unchanged there).
+   */
+  recoverTrackingFallbacks(conditions: RuntimeConditions): void {
+    if (!conditions.trackingOk) return;
+    for (const region of Object.values(this.store.current.regions)) {
+      if (region.state !== 'FALLBACK' || region.reason !== 'tracking_lost') continue;
+      const toLive = this.regionMachine.request(region, 'LIVE', 'none', conditions.now);
+      if (toLive !== region) this.applyRegionState(region.id, toLive, conditions);
+    }
+  }
+
   private recomputeRegionObjects(conditions: RuntimeConditions): void {
     const snapshot: SceneSnapshot = this.store.current;
     for (const region of Object.values(snapshot.regions)) {

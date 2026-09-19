@@ -100,7 +100,11 @@ export class VisualPoseSource implements PoseSource {
     if (!summary) return;
 
     this._lastFlow = summary;
-    this._motionPx = summary.medianMagnitudePx;
+    // Losing most corners between two frames (a bump larger than the tracker's pyramid
+    // range, a hand over the lens, lights off) is motion too: report it as beyond the
+    // loss threshold rather than as "0 px" from an empty flow set.
+    const lostCorners = summary.total >= 20 && summary.tracked < 0.3 * summary.total;
+    this._motionPx = lostCorners ? Math.max(summary.medianMagnitudePx, this.motionLostPx + 1) : summary.medianMagnitudePx;
 
     if (this._motionPx > this.motionLostPx) {
       this.lastMotionLostAt = now;

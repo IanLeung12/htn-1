@@ -1,7 +1,7 @@
 # General-camera backend - state
 
-Branch: `worktree-agent-a44ecaa8a93687167` (dev server + Playwright on port 5177 on this
-branch only). Architecture: `docs/general-camera/architecture.md`.
+Branch: `worktree-agent-a44ecaa8a93687167` (dev server + Playwright on port 5179 on this
+branch only; 5177 is the owner's real-camera test origin). Architecture: `docs/general-camera/architecture.md`.
 
 ## Decisions
 
@@ -66,7 +66,7 @@ branch only). Architecture: `docs/general-camera/architecture.md`.
 | 2 | Plane-prior depth; model worker + metric fit; `DepthEstimator.sample()` into `CameraFrame`; scale/shift/smoothing | done; owner-verified on WebGPU |
 | 3 | RANSAC ground/tables/walls + volumes (`surfaces/ransac.ts`, `surfaces/depth-surfaces.ts`); attitude from the dominant plane; depth pick for spawn; tunables panel + persistence | done; `camera-capture.spec.ts` (injected depth) green |
 | 4 | Discovery -> approve -> appearance + synthetic plate (tier D) -> move; observed clean plate -> tier B -> delete with hull over video | done (single viewpoint); multi-shot guide for moving cameras wired |
-| 5 | Optical-flow motion -> `trackingOk`; `?pose=visual` rotation integration | done, unit-tested; not yet e2e-tested |
+| 5 | Optical-flow motion -> `trackingOk`; regions recover from `tracking_lost` when tracking returns (`RegionManager.recoverTrackingFallbacks`, camera app only); `?pose=visual` rotation integration | done; `camera-tracking.spec.ts` green |
 | - | Firefox black screen (owner report) | not reproduced in Firefox 155 with fake media (video, WebGL, WASM depth all fine); hardened: `facingMode: { ideal }`, landing card now shows the start error instead of hiding over black |
 
 Checks on this branch: `npx tsc --noEmit` clean; `npx vitest run` 280 passed; `npx vite build`
@@ -89,6 +89,11 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
 - Floor surfaces carry a +-0.01 m aabb pad (same as XR planes): physics settles a 0.08 m
   cube at y = 0.09.
 - The pointer's world point must not be read before any pointer event (`right.active`).
+- Losing most LK corners between frames (bump beyond the pyramid range) must count as
+  motion, not as "0 px"; `VisualPoseSource` reports it above the loss threshold.
+- The core region machine never leaves `FALLBACK/tracking_lost` on its own and the XR
+  baseline driver only recovers `user` fallbacks, so after a bump every edit was refused
+  with `region_fallback` forever; the camera app requests LIVE once tracking is back.
 
 ## Real-camera feedback (owner, Chrome, laptop webcam 640x480, WebGPU depth 227 ms)
 
@@ -112,5 +117,5 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
 2. Record RANSAC worker latency from the owner's laptop in this file.
 3. Multi-frame appearance for moved real objects (accumulate frames as the camera pans in
    `?pose=visual`); hull from several shots.
-4. E2E for tracking loss (shifted fake video) and for `?pose=visual`.
+4. E2E for `?pose=visual` rotation integration.
 5. Phone test over HTTPS (`npm run dev:https`): orientation pose + two-finger scale/yaw.
