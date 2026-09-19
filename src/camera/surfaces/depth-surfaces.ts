@@ -437,7 +437,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       const ex = fit.extentMax.x - fit.extentMin.x;
       const ez = fit.extentMax.z - fit.extentMin.z;
       const belowCameraM = depth.pose.position.y - fit.centroid.y;
-      const trackedTable = this.trustPose && fit.inliers.length >= TRACKED_TABLE_MIN_INLIERS && belowCameraM >= TRACKED_TABLE_MIN_BELOW_M && belowCameraM <= TRACKED_TABLE_MAX_BELOW_M;
+      const trackedTable = this.trustPose && fit.inliers.length >= TRACKED_TABLE_MIN_INLIERS && belowCameraM >= TRACKED_TABLE_MIN_BELOW_M && belowCameraM <= TRACKED_TABLE_MAX_BELOW_M && Math.max(ex, ez) >= tuning.planeMinExtentM;
       if (!trackedTable && (Math.max(ex, ez) < tuning.planeMinExtentM || Math.min(ex, ez) < tuning.planeMinExtentM / 2)) continue;
       const aabb: Aabb = { min: fit.extentMin, max: fit.extentMax };
       const matched = this.trackedTables.find((t) => Math.abs(t.aabb.min.y - aabb.min.y) <= TABLE_ID_MATCH_HEIGHT_M && aabbIntersects(t.aabb, aabb));

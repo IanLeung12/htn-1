@@ -740,14 +740,16 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       // Textureless hole (stereo): a fitted horizontal surface crossing the pixel ray near the nearest valid depth.
       return pickOnSurfaceThroughHole(map, px, py, surfaceEstimator.lastFrame, Object.values(store.current.surfaces), 24, 0.05, 0.3, !!zedSdk);
     }
-    const below = surfaceBelow(store.current, { x: point.x, y: point.y + 0.05, z: point.z });
-    if (below && point.y + 0.05 - below.aabb.max.y < 0.2) point.y = below.aabb.max.y;
+    // Measured depth of a desk seen edge-on scatters +-6 cm around the fitted top: snap from further below.
+    const snapUp = zedSdk ? 0.12 : 0.05;
+    const below = surfaceBelow(store.current, { x: point.x, y: point.y + snapUp, z: point.z });
+    if (below && point.y + snapUp - below.aabb.max.y < 0.2) point.y = below.aabb.max.y;
     return { point, confidence: 1, mode: 'depth' };
   }
 
   /** Drop a world point onto the nearest detected horizontal surface below it (any distance), if one exists. */
   function dropToSupport(p: Vec3): Vec3 {
-    const below = surfaceBelow(store.current, { x: p.x, y: p.y + 0.02, z: p.z });
+    const below = surfaceBelow(store.current, { x: p.x, y: p.y + (zedSdk ? 0.12 : 0.02), z: p.z });
     return below ? { x: p.x, y: below.aabb.max.y, z: p.z } : p;
   }
 
