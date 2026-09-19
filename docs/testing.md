@@ -123,7 +123,14 @@ the same document.
   performance budget - see the note below).
 - **`persistence.spec.ts`**: with a `persistKey`, spawns an object, waits out
   `autoPersist`'s 250ms debounce, reloads the page (fresh `XRDevice`, fresh app instance),
-  and confirms the object rehydrates from `localStorage`.
+  and confirms the object rehydrates from `localStorage`. Persistence itself round-trips
+  through the room anchor (`src/xr/anchors.ts`, `src/core/snapshot-transform.ts`) so this
+  still passes when the emulator's fresh session gets a fresh (non-persistent-handle)
+  anchor each time, since `fromAnchorSpace`/`toAnchorSpace` are inverses of each other
+  regardless of whether the anchor pose is identity (as it always is in this emulator - see
+  the coordinate-frame note above) or not; see `docs/testing.md`'s "Anchors and persistent
+  handles" bullet above for what this simulator cannot exercise (a genuine origin shift
+  between the persist and the restore).
 - **`screenshots.spec.ts`**: not an assertion-driven spec - a visual smoke test that drives
   the simulator through a sequence of states and writes PNGs to `test-results/screens/` for
   human review (see `docs/ui.md` for what "good" looks like):
@@ -187,6 +194,39 @@ full writeup with citations to the exact `.d.ts`/`.js` files)
   outside this simulator; it's noted here because several specs and `sim.setHead`/`lookAt`
   target the same coordinates as `store.current` object/surface poses, and that only works
   because of this specific behavior.
+- **Anchors and persistent handles are implemented**, unlike most of the optional-feature
+  surface: `frame.createAnchor(pose, space)` resolves a real `XRAnchor`;
+  `anchor.requestPersistentHandle()` resolves a `crypto.randomUUID()` string and stores the
+  anchor's offset matrix (relative to `XRDevice`'s global space) under IWER's own
+  `localStorage` key (`@immersive-web-emulation-runtime/persistent-anchors`), independent of
+  this app's `reality-editor:anchor:<persistKey>` key (`src/xr/anchors.ts`); and
+  `session.restorePersistentAnchor(uuid)`/`session.persistentAnchors` round-trip through
+  that store. In the `metaQuest3` device config `'anchors'` is always in
+  `supportedFeatures`, so it is granted whenever requested as an optional feature (see
+  `node_modules/iwer/lib/anchors/XRAnchor.js`, `.../session/XRSession.js`). One gap: IWER's
+  `XRAnchor` never fails or goes untracked once created, so this simulator cannot emulate an
+  anchor that is created but then fails to relocalize on a later session - only the "no
+  anchors support at all" and "fresh anchor every session" fallback paths are exercised
+  here, not "persistent handle restore returns a real anchor but its pose transiently comes
+  back null."
+- **`xrDevice.recenter()` exists and resets the `local-floor` origin to the current head
+  pose** (translation to zero out `xrDevice.position.x/z`, yaw to zero out heading), which
+  is the closest thing IWER has to emulating a real headset's origin moving between
+  sessions/relocalizations - anchors are stored relative to `XRDevice`'s global space, not
+  the reference space, so `frame.getPose(anchor.anchorSpace, refSpace)` would report a
+  different pose after a `recenter()` while a raw world-space object pose captured before it
+  would now be wrong. This was **not** wired into an e2e spec here: `recenter()` sets an
+  internal `pendingReferenceSpaceReset` flag that (per `XRDevice.js`) is only consumed the
+  next time the app re-requests a reference space, which `src/xr/session.ts` only ever does
+  once per `enterAR()` call - exercising it properly would need either a second
+  `requestReferenceSpace` call this app doesn't make today, or a full `exitAR()`/`enterAR()`
+  cycle plus reasoning about which of IWER's internal states survive that, both bigger
+  surgery than this task's scope. The anchor-relative math itself (a world pose converted to
+  anchor space by one anchor pose and back to world space by a *different, rotated* anchor
+  pose lands in the geometrically correct place) is covered directly instead, with no XR/IWER
+  involved at all: `tests/unit/math.test.ts`'s `toAnchorSpace / fromAnchorSpace` describe
+  block and `tests/unit/snapshot-transform.test.ts`'s "a 90 degree yawed anchor moves poses
+  correctly" test.
 - **`xrDevice.remote` (`RemoteControlInterface`)** is a frame-synchronized command queue
   built for out-of-process control (e.g. driving the device from outside the page); most of
   its methods require an active XR session and are queued rather than immediate. Since the
@@ -220,6 +260,16 @@ full writeup with citations to the exact `.d.ts`/`.js` files)
   either way" (0) rather than feeding it straight into `RegionStateMachine.tick()`, which
   would otherwise force every newly-`HYBRID` region straight to `FALLBACK`/`depth_stale`
   before an obstruction's hold time ever elapses.
+- **Anchor relocalization time is not representative of a real headset.** `RoomAnchor`
+  (`src/xr/anchors.ts`) measures `relocalizationMs` as wall-clock time from the first XR
+  frame to the first frame `frame.getPose(anchor.anchorSpace, refSpace)` succeeds; under
+  IWER this is however long `frame.createAnchor()`'s promise takes to settle (observed:
+  roughly one to a few frames, well under a second) plus, if a persistent handle round trip
+  is exercised, `anchor.requestPersistentHandle()`/`session.restorePersistentAnchor()`'s
+  promise time - none of which models a real device's SLAM relocalization latency
+  (`reality-editor-research-ledger.md` calls for measuring this on device: "record
+  relocalization time after briefly covering the headset cameras", which has no emulator
+  equivalent here).
 - **`AppHandle.enterAR()`'s contract says it "resolves after the first frame renders"**, but
   as implemented in `src/app/main.ts` it resolves as soon as `requestARSession()` resolves,
   without awaiting the `firstFramePromise` it sets up. In practice this hasn't caused test

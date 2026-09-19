@@ -42,7 +42,12 @@ function installTestHelpers(): void {
         rotation: { x: dev.quaternion.x, y: dev.quaternion.y, z: dev.quaternion.z, w: dev.quaternion.w },
       },
       trackingOk: true,
-      localizedAnchors: new Set(),
+      // Mirror the app's real room-anchor status (src/xr/anchors.ts via
+      // AppHandle.anchorStatus) instead of always reporting "no anchors
+      // localized" - discovered/spawned objects carry anchorId: 'room-anchor'
+      // (src/capture/discovery.ts, src/app/catalog.ts, src/app/main.ts), and
+      // the resolver rejects edits to them with anchor_lost otherwise.
+      localizedAnchors: window.__realityEditor!.anchorStatus?.localized ? new Set(['room-anchor']) : new Set(),
       depthAgeMs: 0,
       tier: window.__realityEditor!.quality.decision.tier,
     };

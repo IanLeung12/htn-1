@@ -6,6 +6,7 @@
 import type {
   Aabb, EditableObject, PhysicalParams, Pose, SceneSnapshot, SemanticLabel, Surface, Vec3,
 } from '@/core/types';
+import { ROOM_ANCHOR_ID } from '@/core/types';
 import { aabbFromCenterHalfExtents } from '@/core/math';
 import type { CandidateObject, DetectedVolume } from './contract';
 
@@ -186,6 +187,7 @@ export function discover(volumes: DetectedVolume[], snapshot: SceneSnapshot): Ca
       origin: 'physical',
       originalPose: pose,
       currentPose: pose,
+      anchorId: ROOM_ANCHOR_ID,
       visual: { kind: 'primitive' },
       interactionProxy: { kind: 'box', halfExtents: inflatedHalf },
       collisionProxy: { kind: 'box', halfExtents: volume.halfExtents },

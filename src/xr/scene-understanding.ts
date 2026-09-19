@@ -4,9 +4,8 @@
  * runtime never populates frame.detectedPlanes/detectedMeshes this module
  * simply never dispatches anything (no throw).
  *
- * Also opportunistically anchors the room origin via frame.createAnchor when
- * the 'anchors' feature is enabled, tracking localized anchor ids for
- * RuntimeConditions.localizedAnchors.
+ * Room anchoring lives in src/xr/anchors.ts (RoomAnchor); this module only
+ * ever dealt with plane/mesh detection, not anchors.
  */
 import type { Pose, SemanticLabel, Surface, Vec3 } from '@/core/types';
 import { IDENTITY_QUAT } from '@/core/types';
@@ -161,10 +160,7 @@ export class SceneUnderstanding {
   private readonly planeIds = new WeakMap<XRPlane, string>();
   private readonly meshIds = new WeakMap<object, string>();
   private nextId = 0;
-  private roomAnchor: XRAnchor | null = null;
-  private roomAnchorRequested = false;
 
-  readonly localizedAnchors = new Set<string>();
   /** Volumes discovered this frame, for capture.discover(). */
   latestVolumes: DetectedVolume[] = [];
   /** Global mesh shells for shell/collision rendering (not surfaces). */
@@ -209,8 +205,6 @@ export class SceneUnderstanding {
     const meshVolumes = volumes.filter((v) => v.id.startsWith('mesh-'));
     this.latestVolumes = meshVolumes.length > 0 ? meshVolumes : volumes;
     this.latestGlobalMeshes = globalMeshes;
-
-    this.maybeAnchorRoom(frame, refSpace);
   }
 
   private handlePlane(plane: XRPlane, frame: XRFrame, refSpace: XRReferenceSpace, volumes: DetectedVolume[]): void {
@@ -326,26 +320,7 @@ export class SceneUnderstanding {
     }
   }
 
-  private maybeAnchorRoom(frame: XRFrame, refSpace: XRReferenceSpace): void {
-    if (this.roomAnchor || this.roomAnchorRequested) return;
-    if (typeof frame.createAnchor !== 'function') return;
-    this.roomAnchorRequested = true;
-    frame
-      .createAnchor(new XRRigidTransform(), refSpace)
-      .then((anchor) => {
-        this.roomAnchor = anchor;
-        this.localizedAnchors.add('room-origin');
-      })
-      .catch(() => {
-        // Anchors unsupported or the frame expired before the promise settled; not fatal.
-      });
-  }
-
   dispose(): void {
-    try {
-      this.roomAnchor?.delete();
-    } catch {
-      // Anchor may already be invalid.
-    }
+    // No anchor to release here anymore; see src/xr/anchors.ts's RoomAnchor.dispose().
   }
 }

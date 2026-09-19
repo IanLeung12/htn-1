@@ -18,6 +18,15 @@ export interface Aabb { min: Vec3; max: Vec3 }
 export const IDENTITY_QUAT: Readonly<Quat> = { x: 0, y: 0, z: 0, w: 1 };
 export const ZERO_VEC3: Readonly<Vec3> = { x: 0, y: 0, z: 0 };
 
+/**
+ * Id of the single room-scale persistent anchor managed by `src/xr/anchors.ts`.
+ * Objects that should be rejected (anchor_lost) when the room anchor isn't
+ * currently localized carry this as their `EditableObject.anchorId`. Lives in
+ * core (not src/xr) because src/capture and src/app also need to stamp it
+ * onto objects without creating a dependency on the XR layer.
+ */
+export const ROOM_ANCHOR_ID = 'room-anchor';
+
 // ---------------------------------------------------------------------------
 // Time / freshness contract
 // ---------------------------------------------------------------------------

@@ -18,6 +18,13 @@ test('approve, clean-plate capture, delete, restore, undo/redo round-trip', asyn
     .poll(async () => evalApp(() => Object.keys(window.__realityEditor!.store.current.surfaces).length), { timeout: 10_000 })
     .toBeGreaterThan(0);
 
+  // Discovered physical objects carry anchorId: 'room-anchor' (src/capture/discovery.ts),
+  // so the resolver rejects move/delete on them with anchor_lost until the room anchor is
+  // localized (src/xr/anchors.ts, src/core/resolver.ts). Wait for it before editing.
+  await expect
+    .poll(async () => evalApp(() => window.__realityEditor!.anchorStatus?.localized ?? true), { timeout: 10_000 })
+    .toBe(true);
+
   const ids = await evalApp(() => window.__realityEditor!.runCandidateDiscovery());
   expect(ids.length).toBeGreaterThanOrEqual(1);
   const objectId = ids[0]!;
@@ -110,6 +117,10 @@ test('delete is rejected for an un-captured (tier E) object', async ({ evalApp }
     .poll(async () => evalApp(() => Object.keys(window.__realityEditor!.store.current.surfaces).length), { timeout: 10_000 })
     .toBeGreaterThan(0);
 
+  await expect
+    .poll(async () => evalApp(() => window.__realityEditor!.anchorStatus?.localized ?? true), { timeout: 10_000 })
+    .toBe(true);
+
   const ids = await evalApp(() => window.__realityEditor!.runCandidateDiscovery());
   expect(ids.length).toBeGreaterThanOrEqual(1);
   const objectId = ids[0]!;
@@ -141,6 +152,10 @@ test('guided capture walks handle.guide through its steps and ends inactive', as
   await expect
     .poll(async () => evalApp(() => Object.keys(window.__realityEditor!.store.current.surfaces).length), { timeout: 10_000 })
     .toBeGreaterThan(0);
+
+  await expect
+    .poll(async () => evalApp(() => window.__realityEditor!.anchorStatus?.localized ?? true), { timeout: 10_000 })
+    .toBe(true);
 
   const ids = await evalApp(() => window.__realityEditor!.runCandidateDiscovery());
   expect(ids.length).toBeGreaterThanOrEqual(1);

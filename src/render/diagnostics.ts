@@ -54,6 +54,12 @@ export interface DiagnosticsState {
   perfP99: number;
   /** Newest-last; only the last 5 are shown. */
   qualityHistory: readonly QualityHistoryEntry[];
+  /** RoomAnchor.localized (src/xr/anchors.ts): the room anchor currently has a resolvable pose. */
+  anchorLocalized: boolean;
+  /** RoomAnchor.relocalizationMs: time from session start to first localization, null before that. */
+  anchorRelocalizationMs: number | null;
+  /** RoomAnchor.hasPersistentHandle: a persistent anchor handle was obtained (this session or restored). */
+  anchorPersistentHandle: boolean;
 }
 
 export interface Diagnostics {
@@ -102,6 +108,12 @@ function buildLines(state: DiagnosticsState): string[] {
   lines.push(`quality tier: ${state.qualityTier}`);
   lines.push(
     `frame p50/p95/p99: ${fmtMs(state.perfP50)}/${fmtMs(state.perfP95)}/${fmtMs(state.perfP99)}ms`,
+  );
+
+  lines.push(
+    `room anchor: ${state.anchorLocalized ? 'localized' : 'not localized'}` +
+      `  relocalization: ${state.anchorRelocalizationMs === null ? '—' : `${fmtMs(state.anchorRelocalizationMs, 0)}ms`}` +
+      `  persistent handle: ${state.anchorPersistentHandle ? 'yes' : 'no'}`,
   );
 
   const recent = state.qualityHistory.slice(-5);
@@ -174,6 +186,9 @@ export async function getLandingDiagnosticLines(maxLines = 6): Promise<string[]>
     perfP95: 0,
     perfP99: 0,
     qualityHistory: [],
+    anchorLocalized: false,
+    anchorRelocalizationMs: null,
+    anchorPersistentHandle: false,
   };
   return buildLines(state).slice(0, maxLines);
 }

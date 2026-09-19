@@ -6,6 +6,7 @@ export * from './types';
 export * from './api';
 
 export * from './math';
+export * from './snapshot-transform';
 export * from './perf';
 export * from './freshness';
 export * from './regions';

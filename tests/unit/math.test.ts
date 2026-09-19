@@ -6,6 +6,7 @@ import {
   aabbIntersects,
   add,
   distance,
+  fromAnchorSpace,
   length,
   normalize,
   pointInEnvelope,
@@ -17,7 +18,9 @@ import {
   quatSlerp,
   scale,
   sub,
+  toAnchorSpace,
 } from '@/core/math';
+import type { Pose } from '@/core/types';
 import { IDENTITY_QUAT } from '@/core/types';
 
 describe('vec3', () => {
@@ -129,5 +132,47 @@ describe('pointInEnvelope', () => {
     // 180deg turn around Y flips forward to +Z, away from the origin.
     const headPose = { position: { x: 0, y: 0, z: 1 }, rotation: quatFromAxisAngle({ x: 0, y: 1, z: 0 }, Math.PI) };
     expect(pointInEnvelope(headPose, envelope)).toBe(false);
+  });
+});
+
+describe('toAnchorSpace / fromAnchorSpace', () => {
+  const anchorPose: Pose = {
+    position: { x: 1, y: 0, z: 2 },
+    rotation: quatFromAxisAngle({ x: 0, y: 1, z: 0 }, Math.PI / 2),
+  };
+
+  it('round trips an arbitrary pose through anchor space and back', () => {
+    const worldPose: Pose = {
+      position: { x: 3, y: 1.5, z: -1 },
+      rotation: quatFromAxisAngle({ x: 0, y: 1, z: 0 }, 0.4),
+    };
+    const relative = toAnchorSpace(worldPose, anchorPose);
+    const roundTripped = fromAnchorSpace(relative, anchorPose);
+    expect(roundTripped.position.x).toBeCloseTo(worldPose.position.x, 6);
+    expect(roundTripped.position.y).toBeCloseTo(worldPose.position.y, 6);
+    expect(roundTripped.position.z).toBeCloseTo(worldPose.position.z, 6);
+    expect(roundTripped.rotation.x).toBeCloseTo(worldPose.rotation.x, 6);
+    expect(roundTripped.rotation.y).toBeCloseTo(worldPose.rotation.y, 6);
+    expect(roundTripped.rotation.z).toBeCloseTo(worldPose.rotation.z, 6);
+    expect(roundTripped.rotation.w).toBeCloseTo(worldPose.rotation.w, 6);
+  });
+
+  it('a pose expressed in world space at the anchor itself is identity in anchor space', () => {
+    const relative = toAnchorSpace(anchorPose, anchorPose);
+    expect(relative.position.x).toBeCloseTo(0, 6);
+    expect(relative.position.y).toBeCloseTo(0, 6);
+    expect(relative.position.z).toBeCloseTo(0, 6);
+    expect(relative.rotation.w).toBeCloseTo(1, 6);
+  });
+
+  it('a 90 degree yawed anchor rotates a point 1m in front of it to the side in world space', () => {
+    // Anchor sits at (1,0,2) yawed 90 degrees about Y. A point 1m along the
+    // anchor's local -Z (straight "ahead" of the anchor) should land 1m along
+    // world -X once expressed in world space, not 1m along world -Z.
+    const relativePose: Pose = { position: { x: 0, y: 0, z: -1 }, rotation: IDENTITY_QUAT };
+    const worldPose = fromAnchorSpace(relativePose, anchorPose);
+    expect(worldPose.position.x).toBeCloseTo(0, 6); // 1 - 1
+    expect(worldPose.position.y).toBeCloseTo(0, 6);
+    expect(worldPose.position.z).toBeCloseTo(2, 6);
   });
 });

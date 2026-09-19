@@ -17,7 +17,7 @@
  * physics/interaction/occlusion always match what is actually drawn.
  */
 import type { EditableObject, Pose, ProxyShape, Quat, Vec3 } from '@/core/types';
-import { IDENTITY_QUAT } from '@/core/types';
+import { IDENTITY_QUAT, ROOM_ANCHOR_ID } from '@/core/types';
 
 export interface CatalogEntry {
   id: string;
@@ -139,6 +139,7 @@ export function buildCatalogObject(entry: CatalogEntry, pose: Pose, id?: string,
     origin: 'spawned',
     originalPose: finalPose,
     currentPose: finalPose,
+    anchorId: ROOM_ANCHOR_ID,
     visual: { kind: 'gltf', url: entry.url },
     interactionProxy: proxy,
     collisionProxy: { ...proxy, halfExtents: { ...proxy.halfExtents } },

@@ -99,4 +99,51 @@ describe('autoPersist / restore', () => {
     const store = createSceneStore();
     expect(await restore(store, storage, 'missing')).toBe(false);
   });
+
+  it('autoPersist transform converts poses before writing, restore transform converts them back', async () => {
+    vi.useFakeTimers();
+    try {
+      const object = makeObject({ id: 'o1', currentPose: { position: { x: 5, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } } });
+      const store = createSceneStore({ version: 1, objects: { o1: object } });
+      const storage = createMemoryStorage();
+
+      // Anchor-relative persistence stand-in: shift x by -5 going to storage, +5 coming back.
+      const toStorage = (snapshot: import('@/core/types').SceneSnapshot) => ({
+        ...snapshot,
+        objects: Object.fromEntries(
+          Object.entries(snapshot.objects).map(([id, o]) => [
+            id,
+            { ...o, currentPose: { ...o.currentPose, position: { ...o.currentPose.position, x: o.currentPose.position.x - 5 } } },
+          ]),
+        ),
+      });
+      const fromStorage = (snapshot: import('@/core/types').SceneSnapshot) => ({
+        ...snapshot,
+        objects: Object.fromEntries(
+          Object.entries(snapshot.objects).map(([id, o]) => [
+            id,
+            { ...o, currentPose: { ...o.currentPose, position: { ...o.currentPose.position, x: o.currentPose.position.x + 5 } } },
+          ]),
+        ),
+      });
+
+      const unsubscribe = autoPersist(store, storage, 'scene', 10, 20, { transform: toStorage });
+      store.dispatch(
+        { intent: { kind: 'rotate', objectId: 'o1', rotation: { x: 0, y: 0, z: 0, w: 1 } }, source: 'test', issuedAt: 0, basedOnVersion: 1 },
+        makeConditions(),
+      );
+      await vi.advanceTimersByTimeAsync(30);
+      unsubscribe();
+
+      const stored = JSON.parse((await storage.get('scene')) as string);
+      expect(stored.snapshot.objects.o1.currentPose.position.x).toBe(0); // 5 - 5, anchor-relative
+
+      const freshStore = createSceneStore();
+      const ok = await restore(freshStore, storage, 'scene', fromStorage);
+      expect(ok).toBe(true);
+      expect(freshStore.current.objects.o1?.currentPose.position.x).toBe(5); // 0 + 5, back to world
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

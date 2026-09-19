@@ -107,6 +107,15 @@ export interface AppHandle {
    * Optional: undefined until main.ts wires it in (see src/app/spawn.ts).
    */
   spawnAsset?(entryId: string): string | null;
+  /**
+   * Room anchor status (src/xr/anchors.ts's RoomAnchor), for diagnostics and
+   * tests that need to wait for localization before editing an anchored
+   * object (spawned/physical objects carry `anchorId: 'room-anchor'`, and the
+   * resolver rejects edits to them with `anchor_lost` until this is
+   * localized - see src/core/resolver.ts). Optional for backwards
+   * compatibility with older AppHandle consumers/mocks.
+   */
+  readonly anchorStatus?: { localized: boolean; relocalizationMs: number | null; hasPersistentHandle: boolean };
 }
 
 export type StartApp = (options?: AppOptions) => Promise<AppHandle>;

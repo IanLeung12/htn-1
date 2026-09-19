@@ -148,6 +148,26 @@ export function poseInverse(p: Pose): Pose {
 }
 
 // ---------------------------------------------------------------------------
+// Anchor-relative space conversions
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a pose expressed in the current reference space ("world") into a
+ * pose expressed relative to `anchorPose` (itself given in the same
+ * reference space). This is what gets persisted: anchor-relative poses are
+ * stable across sessions even though the reference space origin moves
+ * between sessions and after relocalization (see src/xr/anchors.ts).
+ */
+export function toAnchorSpace(pose: Pose, anchorPose: Pose): Pose {
+  return poseCompose(poseInverse(anchorPose), pose);
+}
+
+/** Inverse of `toAnchorSpace`: anchor-relative pose -> current reference space. */
+export function fromAnchorSpace(pose: Pose, anchorPose: Pose): Pose {
+  return poseCompose(anchorPose, pose);
+}
+
+// ---------------------------------------------------------------------------
 // Aabb
 // ---------------------------------------------------------------------------
 

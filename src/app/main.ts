@@ -16,13 +16,17 @@ import {
   autoPersist,
   restore,
   nearestObjects,
+  toAnchorSpace,
+  fromAnchorSpace,
+  transformSnapshotPoses,
 } from '@/core';
 import type { EditableObject, FrameSample, Pose, QualityDecision, RuntimeConditions, Vec3, VisualMode } from '@/core/types';
-import { IDENTITY_QUAT } from '@/core/types';
+import { IDENTITY_QUAT, ROOM_ANCHOR_ID } from '@/core/types';
 import type { AppHandle, AppOptions, CaptureGuide, StartApp, XRFeatureReport } from './contract';
 import { requestARSession, endARSession } from '@/xr/session';
 import { XRInput } from '@/xr/input';
 import { SceneUnderstanding } from '@/xr/scene-understanding';
+import { RoomAnchor } from '@/xr/anchors';
 import { DepthOcclusion } from '@/xr/depth';
 import { createRenderer } from '@/render/renderer';
 import { ObjectViews } from '@/render/objects';
@@ -84,10 +88,47 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     regionManager.onCommit(applied, conditions());
   });
 
+  // Stable frame of reference for persisted content across sessions: world poses in
+  // 'local-floor' space are only valid for the session that produced them (the origin
+  // moves between sessions and after relocalization), so persistence round-trips through
+  // this anchor instead (see src/xr/anchors.ts, src/core/snapshot-transform.ts).
+  const roomAnchor = new RoomAnchor({ persistKey: options.persistKey });
+  const ANCHOR_LOCALIZE_TIMEOUT_MS = 5000;
+
   if (options.persistKey) {
     const adapter = createLocalStorageAdapter('reality-editor');
-    await restore(store, adapter, options.persistKey);
-    autoPersist(store, adapter, options.persistKey);
+    const persistKey = options.persistKey;
+
+    // Only pay the localization wait when there is actually something to restore -
+    // a first-ever run has nothing persisted yet and should start instantly.
+    const existingBlob = await adapter.get(persistKey);
+    if (existingBlob !== null) {
+      const localizedBeforeHydrate = await roomAnchor.waitForLocalization(ANCHOR_LOCALIZE_TIMEOUT_MS);
+      if (!localizedBeforeHydrate) {
+        console.info(
+          '[reality-editor] room anchor not localized within %dms; restoring persisted scene in identity space',
+          ANCHOR_LOCALIZE_TIMEOUT_MS,
+        );
+      }
+      const anchorAtRestore = roomAnchor.anchorPose;
+      await restore(
+        store,
+        adapter,
+        persistKey,
+        anchorAtRestore ? (snapshot) => transformSnapshotPoses(snapshot, (p) => fromAnchorSpace(p, anchorAtRestore)) : undefined,
+      );
+    }
+
+    autoPersist(store, adapter, persistKey, 250, 1000, {
+      // Re-reads roomAnchor.anchorPose on every flush (not captured once at startup) so
+      // writes stay anchor-relative even as the anchor's own tracked pose refines. Falls
+      // back to identity (today's behaviour) whenever there is no localized anchor -
+      // desktop sim without a session, or a runtime with no anchors support at all.
+      transform: (snapshot) => {
+        const anchorPose = roomAnchor.anchorPose;
+        return anchorPose ? transformSnapshotPoses(snapshot, (p) => toAnchorSpace(p, anchorPose)) : snapshot;
+      },
+    });
   }
 
   const { renderer, dispose: disposeRenderer } = createRenderer(container);
@@ -189,6 +230,9 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     perfP95: 0,
     perfP99: 0,
     qualityHistory: quality.history,
+    anchorLocalized: false,
+    anchorRelocalizationMs: null,
+    anchorPersistentHandle: false,
   };
   if (diagState.xrPresent) {
     navigator.xr!.isSessionSupported('immersive-ar').then((ok) => { diagState.arSupported = ok; }).catch(() => { diagState.arSupported = false; });
@@ -222,7 +266,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       now: performance.now(),
       headPose,
       trackingOk,
-      localizedAnchors: sceneUnderstanding.localizedAnchors,
+      localizedAnchors: roomAnchor.localizedAnchors,
       depthAgeMs: depth.state.ageMs,
       tier: quality.decision.tier,
     };
@@ -298,6 +342,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       origin: 'spawned',
       originalPose: pose,
       currentPose: pose,
+      anchorId: ROOM_ANCHOR_ID,
       visual: { kind: 'primitive', color: kind === 'box' ? 0x66aaff : 0xff8866 },
       interactionProxy: kind === 'box' ? { kind: 'box', halfExtents: { x: 0.08, y: 0.08, z: 0.08 } } : { kind: 'sphere', radius: 0.08 },
       collisionProxy: kind === 'box' ? { kind: 'box', halfExtents: { x: 0.08, y: 0.08, z: 0.08 } } : { kind: 'sphere', radius: 0.08 },
@@ -446,6 +491,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       trackingOk = !!viewerPose && !viewerPose.emulatedPosition;
       input.update(frame, refSpace);
       sceneUnderstanding.update(frame, refSpace);
+      roomAnchor.update(frame, refSpace, session);
     }
 
     depth.update(now);
@@ -503,6 +549,9 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       diagState.perfP95 = ps.p95;
       diagState.perfP99 = ps.p99;
       diagState.qualityHistory = quality.history;
+      diagState.anchorLocalized = roomAnchor.localized;
+      diagState.anchorRelocalizationMs = roomAnchor.relocalizationMs;
+      diagState.anchorPersistentHandle = roomAnchor.hasPersistentHandle;
       diagnostics.update(diagState);
     }
 
@@ -608,6 +657,13 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     voice: voiceAndMenu.voice,
     catalog: CATALOG,
     spawnAsset,
+    get anchorStatus() {
+      return {
+        localized: roomAnchor.localized,
+        relocalizationMs: roomAnchor.relocalizationMs,
+        hasPersistentHandle: roomAnchor.hasPersistentHandle,
+      };
+    },
     dispose(): void {
       voiceAndMenu.dispose();
       const finish = () => {
@@ -618,6 +674,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       shell.dispose();
       input.dispose();
       sceneUnderstanding.dispose();
+      roomAnchor.dispose();
       inXRHud.dispose();
       domHud.dispose();
       guideOverlay.dispose();
