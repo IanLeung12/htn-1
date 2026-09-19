@@ -95,7 +95,10 @@ export function createSceneStore(initial?: Partial<SceneSnapshot>, opts?: SceneS
 
       const result = resolver.resolve(current, envelope, conditions);
       if (result.ok) {
-        if (isUndoableIntent(intent.kind)) {
+        // System-sourced moves are physics/scene-understanding writes, not
+        // user edits; pushing them onto the undo stack would let a user
+        // "undo" a physics settle instead of their own last action.
+        if (isUndoableIntent(intent.kind) && envelope.source !== 'system') {
           pushUndo(current);
           redoStack = [];
         }

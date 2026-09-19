@@ -15,3 +15,4 @@ export * from './store';
 export * from './persistence';
 export * from './query';
 export * from './fixtures';
+export * from './physics';

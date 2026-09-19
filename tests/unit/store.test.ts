@@ -121,4 +121,47 @@ describe('createSceneStore', () => {
     expect(store.hydrate(JSON.stringify({ snapshot: { version: 'nope', objects: {} } }))).toBe(false);
     expect(store.current.version).toBe(1);
   });
+
+  it('system-sourced moves (physics) commit but do not push undo history', () => {
+    const object = makeObject({ id: 'o1' });
+    const store = createSceneStore({ version: 1, objects: { o1: object } });
+    expect(store.canUndo()).toBe(false);
+
+    const pose = { position: { x: 0, y: 0.5, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    const result = store.dispatch(
+      { intent: { kind: 'move', objectId: 'o1', pose }, source: 'system', issuedAt: 0, basedOnVersion: store.current.version },
+      makeConditions(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(store.current.objects.o1?.currentPose).toEqual(pose);
+    expect(store.canUndo()).toBe(false);
+  });
+
+  it('a system-sourced move does not clear an existing redo stack', () => {
+    const object = makeObject({ id: 'o1' });
+    const store = createSceneStore({ version: 1, objects: { o1: object } });
+
+    store.dispatch(env({ kind: 'delete', objectId: 'o1' }, 1), makeConditions());
+    store.dispatch({ intent: { kind: 'undo' }, source: 'test', issuedAt: 0, basedOnVersion: store.current.version }, makeConditions());
+    expect(store.canRedo()).toBe(true);
+
+    const pose = { position: { x: 1, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    store.dispatch(
+      { intent: { kind: 'move', objectId: 'o1', pose }, source: 'system', issuedAt: 0, basedOnVersion: store.current.version },
+      makeConditions(),
+    );
+    expect(store.canRedo()).toBe(true);
+  });
+
+  it('a hand-sourced (user) move still pushes undo history as before', () => {
+    const object = makeObject({ id: 'o1' });
+    const store = createSceneStore({ version: 1, objects: { o1: object } });
+    const pose = { position: { x: 1, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    store.dispatch(
+      { intent: { kind: 'move', objectId: 'o1', pose }, source: 'hand', issuedAt: 0, basedOnVersion: store.current.version },
+      makeConditions(),
+    );
+    expect(store.canUndo()).toBe(true);
+  });
 });
