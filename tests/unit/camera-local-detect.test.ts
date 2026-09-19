@@ -98,6 +98,15 @@ describe('detectVolumeAtPixel', () => {
     expect(detectVolumeAtPixel(map, far.px, far.py, null, [desk], { id: 'tap' })).toBeNull();
   });
 
+  it('ignores a transient table plane fitted through the object itself', () => {
+    // A bogus 'table' at the box's own height (fitted through its top) must not become the support.
+    const bogus = { ...desk, id: 'lid', label: 'table', aabb: { min: { x: -0.5, y: 0.13, z: -3.5 }, max: { x: 0.5, y: 0.14, z: -2.5 } } } as unknown as Surface;
+    const { px, py } = pixelOf(map, { x: 0, y: 0.08, z: -2.95 });
+    const vol = detectVolumeAtPixel(map, px, py, null, [desk, bogus], { id: 'tap' });
+    expect(vol).not.toBeNull();
+    expect(vol!.pose.position.y - vol!.halfExtents.y).toBeCloseTo(0, 2);
+  });
+
   it('supportTopAt picks the highest surface under the point', () => {
     const table = { ...desk, id: 't', label: 'table', aabb: { min: { x: -1, y: 0.49, z: -2 }, max: { x: 1, y: 0.5, z: -0.5 } } } as unknown as Surface;
     expect(supportTopAt([desk, table], { x: 0, y: 0.6, z: -1 }).y).toBeCloseTo(0.5, 6);

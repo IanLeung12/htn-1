@@ -48,6 +48,22 @@ export function supportTopAt(surfaces: readonly Surface[], p: Vec3, padM = 0.2):
   return best ? { y: bestY, surface: best } : { y: 0, surface: null };
 }
 
+/** 5th percentile of world y over the depth points within `radius` (XZ) of `around`; `around.y` if none. */
+export function lowestYAround(map: DepthMap, frame: WorldFrame | null, around: Vec3, radius: number, stride = 2): number {
+  const ys: number[] = [];
+  for (let y = 0; y < map.height; y += stride) {
+    for (let x = 0; x < map.width; x += stride) {
+      const p = pickFromMap(map, x, y, frame);
+      if (!p) continue;
+      if (Math.hypot(p.x - around.x, p.z - around.z) > radius) continue;
+      ys.push(p.y);
+    }
+  }
+  if (ys.length === 0) return around.y;
+  ys.sort((a, b) => a - b);
+  return ys[Math.floor(ys.length * 0.05)]!;
+}
+
 /**
  * Grow an object volume from depth pixel (px, py). Null when the pixel has no
  * depth, lies on the support surface itself, or the region is too small/large.
@@ -69,7 +85,13 @@ export function detectVolumeAtPixel(
 
   const seed = pickFromMapRobust(map, px, py, frame);
   if (!seed) return null;
-  const support = supportTopAt(surfaces, seed);
+  // Support height: the lowest depth points around the click (the desk/floor the object stands
+  // on is always visible around it). A registered surface is only trusted when it agrees with
+  // that; transient planes fitted through can tops or a laptop lid sit at the object's own
+  // height and would otherwise leave nothing "above the support".
+  const localMinY = lowestYAround(map, frame, seed, radius);
+  const registered = supportTopAt(surfaces, seed);
+  const support = registered.surface && registered.y <= localMinY + 0.06 ? registered : { y: localMinY, surface: null };
   // Clicked the desk/floor itself: look for something standing just above it around the click.
   let sx = Math.floor(px);
   let sy = Math.floor(py);
