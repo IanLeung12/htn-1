@@ -112,6 +112,8 @@ export function createVoiceController(opts: VoiceControllerOptions): VoiceContro
   const shouldSpeak = opts.speak ?? true;
   let recognition: SpeechRecognitionLike | null = null;
   let listening = false;
+  let restartFailures = 0;
+  let lastStartAt = 0;
   let stoppedIntentionally = false;
 
   function say(text: string): void {
@@ -224,15 +226,24 @@ export function createVoiceController(opts: VoiceControllerOptions): VoiceContro
     };
     rec.onend = () => {
       listening = false;
-      if (!stoppedIntentionally) {
-        // Some browsers stop `continuous` recognition unexpectedly; restart.
+      if (stoppedIntentionally) return;
+      // Some browsers stop `continuous` recognition unexpectedly; restart with
+      // exponential backoff (250 ms .. 8 s) and give up after 8 consecutive failures
+      // so a revoked mic or missing network does not spin a restart loop.
+      const sinceLastStart = Date.now() - lastStartAt;
+      restartFailures = sinceLastStart < 2000 ? restartFailures + 1 : 0;
+      if (restartFailures >= 8) return;
+      const delay = Math.min(8000, 250 * 2 ** restartFailures);
+      setTimeout(() => {
+        if (stoppedIntentionally) return;
         try {
+          lastStartAt = Date.now();
           rec.start();
           listening = true;
         } catch {
           /* ignore */
         }
-      }
+      }, delay);
     };
   }
 

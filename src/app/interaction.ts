@@ -9,6 +9,16 @@ import type { EditableObject, Pose, ResolveResult, RuntimeConditions } from '@/c
 import type { Handedness, HandState, InputState } from '@/xr/input';
 
 const GRAB_SNAP_DIST = 0.05;
+/** Largest half extent (m) an object may have and still be grabbed from inside its proxy. */
+const GRASPABLE_HALF_EXTENT_M = 0.4;
+
+function isGraspable(obj: EditableObject | undefined): boolean {
+  if (!obj) return false;
+  const p = obj.interactionProxy;
+  if (p.kind === 'box') return Math.max(p.halfExtents.x, p.halfExtents.y, p.halfExtents.z) <= GRASPABLE_HALF_EXTENT_M;
+  if (p.kind === 'sphere') return p.radius <= GRASPABLE_HALF_EXTENT_M;
+  return Math.max(p.radius, p.halfHeight + p.radius) <= GRASPABLE_HALF_EXTENT_M;
+}
 
 /** Hoisted so the per-frame two-hand loop doesn't allocate a tuple + closure every call. */
 const HANDS: readonly Handedness[] = ['left', 'right'];
@@ -55,15 +65,21 @@ export class InteractionController {
     const origin = { x: state.ray.origin.x, y: state.ray.origin.y, z: state.ray.origin.z };
     const dir = { x: state.ray.direction.x, y: state.ray.direction.y, z: state.ray.direction.z };
     const hits = raycastProxies(snapshot, origin, dir, 3);
-    const hoverId = hits[0]?.objectId ?? null;
+    // A hand enclosed by a proxy counts as hovering only for hand-sized objects; being
+    // inside a couch or table proxy must not make every pinch grab the furniture.
+    let hoverId: string | null = null;
+    for (const hit of hits) {
+      if (!hit.originInside || isGraspable(snapshot.objects[hit.objectId])) {
+        hoverId = hit.objectId;
+        break;
+      }
+    }
     if (!this.grabs.has(hand)) {
       this.hoveredId = hoverId;
     }
 
-    if (state.selectStart && hoverId) {
+    if (state.selectStart && hoverId && !this.grabs.has(hand) && !this.isGrabbedByOtherHand(hoverId, hand)) {
       this.grab(hoverId, hand, state);
-    } else if (state.selectStart && !hoverId) {
-      // Pinch in empty space: nothing to grab, no-op.
     }
 
     const grab = this.grabs.get(hand);
@@ -74,6 +90,13 @@ export class InteractionController {
     if (state.selectEnd) {
       this.release(hand, conditions);
     }
+  }
+
+  private isGrabbedByOtherHand(objectId: string, hand: Handedness): boolean {
+    for (const [h, g] of this.grabs) {
+      if (h !== hand && g.objectId === objectId) return true;
+    }
+    return false;
   }
 
   /** Programmatic grab API per app contract. */
@@ -109,7 +132,14 @@ export class InteractionController {
 
     const snapshot = this.store.current;
     const obj = snapshot.objects[grab.objectId];
-    if (!obj) return;
+    if (!obj || !obj.visible) {
+      // Deleted mid-grab: nothing to commit, just drop the preview.
+      this.store.dispatch(
+        { intent: { kind: 'clearPreview' }, source: 'hand', issuedAt: conditions.now, basedOnVersion: snapshot.version },
+        conditions,
+      );
+      return;
+    }
 
     // Commit the previewed pose (the object followed the hand during the grab);
     // fall back to the current pose if no preview was ever published.

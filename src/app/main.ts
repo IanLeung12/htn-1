@@ -66,6 +66,9 @@ function poseFromMatrix(camera: THREE.Camera): Pose {
   return { position: { x: p.x, y: p.y, z: p.z }, rotation: { x: q.x, y: q.y, z: q.z, w: q.w } };
 }
 
+/** Quest 3 default display cadence (72 Hz); see runtime budget doc. */
+const TARGET_FRAME_MS = 1000 / 72;
+
 export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppHandle> => {
   const container = options.container ?? document.body;
   const headless = options.headless ?? false;
@@ -205,6 +208,9 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
 
   let features: XRFeatureReport | null = null;
   let inSession = false;
+  let sessionPending = false;
+  /** Real tracking signal: viewer pose present and not emulated (updated per XR frame). */
+  let trackingOk = true;
   let firstFrameResolve: (() => void) | null = null;
   let firstFramePromise: Promise<void> | null = null;
   let lastFrameTime: number | null = null;
@@ -215,7 +221,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     return {
       now: performance.now(),
       headPose,
-      trackingOk: true,
+      trackingOk,
       localizedAnchors: sceneUnderstanding.localizedAnchors,
       depthAgeMs: depth.state.ageMs,
       tier: quality.decision.tier,
@@ -310,12 +316,20 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   }
 
   async function enterAR(): Promise<XRFeatureReport> {
-    const result = await requestARSession(renderer, {
-      onEnd: () => {
-        inSession = false;
-        features = null;
-      },
-    });
+    if (inSession && features) return features;
+    if (sessionPending) throw new Error('enterAR: a session request is already in progress');
+    sessionPending = true;
+    let result;
+    try {
+      result = await requestARSession(renderer, {
+        onEnd: () => {
+          inSession = false;
+          features = null;
+        },
+      });
+    } finally {
+      sessionPending = false;
+    }
     features = result.featureReport;
     inSession = !!result.session;
 
@@ -328,8 +342,20 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   }
 
   async function exitAR(): Promise<void> {
-    endARSession(renderer.xr.getSession());
-    inSession = false;
+    const session = renderer.xr.getSession();
+    if (!session) return;
+    // inSession flips in the session's own 'end' handler; wait for it here so callers
+    // (and dispose) never tear down the renderer while the session is still ending.
+    await new Promise<void>((resolve) => {
+      const done = () => resolve();
+      session.addEventListener('end', done, { once: true });
+      try {
+        endARSession(session);
+      } catch {
+        session.removeEventListener('end', done);
+        resolve();
+      }
+    });
   }
 
   async function runCandidateDiscovery(): Promise<string[]> {
@@ -414,6 +440,10 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       const session = renderer.xr.getSession();
       refSpace = renderer.xr.getReferenceSpace();
       void session;
+      // Tracking: a missing viewer pose or an emulated (3DoF/inferred) position means
+      // the platform itself does not trust the head pose; every safety fallback keys on this.
+      const viewerPose = refSpace ? frame.getViewerPose(refSpace) : null;
+      trackingOk = !!viewerPose && !viewerPose.emulatedPosition;
       input.update(frame, refSpace);
       sceneUnderstanding.update(frame, refSpace);
     }
@@ -437,13 +467,17 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     if (input.state.right.active) {
       obstructionPoints.push({ x: input.state.right.position.x, y: input.state.right.position.y, z: input.state.right.position.z });
     }
-    regionManager.tick(cond, snapshot.mode, quality.decision, obstructionPoints);
+    // Interaction, physics, and voice may have committed this frame; from here on every
+    // consumer reads ONE coherent snapshot (never a mix of two versions).
+    const committed = store.current;
+    regionManager.tick(cond, committed.mode, quality.decision, obstructionPoints);
 
-    views.update(store.current);
-    views.updatePreview(store.current, previewGroup);
-    plates.update(store.current, cond.headPose);
-    backgroundHull.update(store.current, cond.headPose);
-    shell.update(store.current, sceneUnderstanding.latestGlobalMeshes);
+    const frameSnapshot = store.current;
+    views.update(frameSnapshot);
+    views.updatePreview(frameSnapshot, previewGroup);
+    plates.update(frameSnapshot, cond.headPose);
+    backgroundHull.update(frameSnapshot, cond.headPose);
+    shell.update(frameSnapshot, sceneUnderstanding.latestGlobalMeshes);
     // Floor is at y=0 in local-floor space (see docs/testing.md's IWER coordinate-frame note).
     guideOverlay.update(guide, 0);
 
@@ -488,10 +522,10 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
         tier: cond.tier,
         frameP95: perf.stats('frameMs').p95,
         depthAgeMs: depth.state.ageMs,
-        mode: snapshot.mode,
+        mode: frameSnapshot.mode,
         selectedObjectId: interaction.selectedId,
-        selectedObjectName: interaction.selectedId ? (snapshot.objects[interaction.selectedId]?.userName ?? null) : null,
-        selectedObjectPosition: interaction.selectedId ? (snapshot.objects[interaction.selectedId]?.currentPose.position ?? null) : null,
+        selectedObjectName: interaction.selectedId ? (frameSnapshot.objects[interaction.selectedId]?.userName ?? null) : null,
+        selectedObjectPosition: interaction.selectedId ? (frameSnapshot.objects[interaction.selectedId]?.currentPose.position ?? null) : null,
         lastRejection: interaction.lastRejection,
         guide,
       },
@@ -502,7 +536,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
         tier: cond.tier,
         frameP95: perf.stats('frameMs').p95,
         depthAgeMs: depth.state.ageMs,
-        mode: snapshot.mode,
+        mode: frameSnapshot.mode,
         selectedObjectId: interaction.selectedId,
         lastRejection: interaction.lastRejection,
         guide,
@@ -516,7 +550,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       frameMs,
       depthAgeMs: depth.state.ageMs,
       trackingOk: cond.trackingOk,
-      droppedFrames: frameMs > 33.4 ? 1 : 0,
+      droppedFrames: Math.max(0, Math.round(frameMs / TARGET_FRAME_MS) - 1),
       thermalThrottled: false,
       memoryPressure: false,
       handConfidence: Math.max(input.state.left.confidence, input.state.right.confidence),
@@ -576,8 +610,8 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     spawnAsset,
     dispose(): void {
       voiceAndMenu.dispose();
-      void exitAR();
-      disposeRenderer();
+      const finish = () => {
+        disposeRenderer();
       views.dispose();
       plates.dispose();
       backgroundHull.dispose();
@@ -587,6 +621,9 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       inXRHud.dispose();
       domHud.dispose();
       guideOverlay.dispose();
+        if (window.__realityEditor === handle) delete window.__realityEditor;
+      };
+      void exitAR().then(finish, finish);
     },
   };
 

@@ -36,8 +36,16 @@ function isValidSnapshotShape(value: unknown): value is SceneSnapshot {
   if (typeof v.objects !== 'object' || v.objects === null || Array.isArray(v.objects)) return false;
   if (typeof v.surfaces !== 'object' || v.surfaces === null || Array.isArray(v.surfaces)) return false;
   if (typeof v.regions !== 'object' || v.regions === null || Array.isArray(v.regions)) return false;
+  for (const o of Object.values(v.objects as Record<string, unknown>)) {
+    if (typeof o !== 'object' || o === null) return false;
+    const obj = o as Record<string, unknown>;
+    if (typeof obj.id !== 'string' || !VALID_TIERS.has(obj.tier as string)) return false;
+    if (typeof obj.currentPose !== 'object' || obj.currentPose === null) return false;
+    if (typeof obj.interactionProxy !== 'object' || obj.interactionProxy === null) return false;
+  }
   return true;
 }
+const VALID_TIERS: ReadonlySet<string> = new Set(['A', 'B', 'C', 'D', 'E']);
 
 export function createSceneStore(initial?: Partial<SceneSnapshot>, opts?: SceneStoreOptions): SceneStore {
   const resolver = opts?.resolver ?? createResolver();

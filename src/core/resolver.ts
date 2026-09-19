@@ -184,7 +184,7 @@ export function createResolver(opts?: ResolverOptions): TransactionResolver {
     }
 
     // --- region fallback ----------------------------------------------
-    if (object && (intent.kind === 'move' || intent.kind === 'delete')) {
+    if (object && (intent.kind === 'move' || intent.kind === 'delete' || intent.kind === 'rotate' || intent.kind === 'scale' || intent.kind === 'replace')) {
       const fallbackRegion = regionInFallbackAt(snapshot, object.currentPose.position);
       if (fallbackRegion) {
         return reject(

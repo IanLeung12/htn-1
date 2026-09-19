@@ -4,7 +4,7 @@
  * point" for placement/drop logic.
  */
 import type { Aabb, EditableObject, Pose, Region, SceneSnapshot, Surface, Vec3 } from './types';
-import { aabbContains, add, distance, normalize, poseInverse, quatRotateVec3 } from './math';
+import { aabbContains, add, distance, normalize, poseInverse, quatRotateVec3, length } from './math';
 
 export function nearestObjects(snapshot: SceneSnapshot, point: Vec3, maxDistance: number): EditableObject[] {
   return Object.values(snapshot.objects)
@@ -19,6 +19,8 @@ export interface RaycastHit {
   objectId: string;
   distance: number;
   point: Vec3;
+  /** True when the ray origin was already inside the proxy (a hand enclosed by the object). */
+  originInside: boolean;
 }
 
 function rayBoxLocal(originLocal: Vec3, dirLocal: Vec3, halfExtents: Vec3): number | null {
@@ -44,6 +46,10 @@ function rayBoxLocal(originLocal: Vec3, dirLocal: Vec3, halfExtents: Vec3): numb
   }
   if (tMax < 0) return null;
   return tMin >= 0 ? tMin : tMax;
+}
+
+function pointInBoxLocal(p: Vec3, he: Vec3): boolean {
+  return Math.abs(p.x) <= he.x && Math.abs(p.y) <= he.y && Math.abs(p.z) <= he.z;
 }
 
 function raySphereLocal(originLocal: Vec3, dirLocal: Vec3, radius: number): number | null {
@@ -73,17 +79,22 @@ export function raycastProxies(snapshot: SceneSnapshot, origin: Vec3, direction:
 
     const proxy = o.interactionProxy;
     let t: number | null = null;
+    let originInside = false;
     if (proxy.kind === 'box') {
       t = rayBoxLocal(originLocal, dirLocal, proxy.halfExtents);
+      originInside = pointInBoxLocal(originLocal, proxy.halfExtents);
     } else if (proxy.kind === 'sphere') {
       t = raySphereLocal(originLocal, dirLocal, proxy.radius);
+      originInside = length(originLocal) <= proxy.radius;
     } else {
       // capsule: approximate as a box (radius, halfHeight+radius, radius).
-      t = rayBoxLocal(originLocal, dirLocal, { x: proxy.radius, y: proxy.halfHeight + proxy.radius, z: proxy.radius });
+      const he = { x: proxy.radius, y: proxy.halfHeight + proxy.radius, z: proxy.radius };
+      t = rayBoxLocal(originLocal, dirLocal, he);
+      originInside = pointInBoxLocal(originLocal, he);
     }
 
     if (t !== null && t >= 0 && t <= maxDistance) {
-      hits.push({ objectId: o.id, distance: t, point: add(origin, { x: dir.x * t, y: dir.y * t, z: dir.z * t }) });
+      hits.push({ objectId: o.id, distance: t, point: add(origin, { x: dir.x * t, y: dir.y * t, z: dir.z * t }), originInside });
     }
   }
 
