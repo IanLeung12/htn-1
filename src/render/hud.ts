@@ -32,13 +32,34 @@ export interface HudButtons {
 }
 
 const REJECTION_DISPLAY_MS = 3000;
+/** HUD text is diagnostic, not a display-critical surface (see runtime-budget
+ * budget hierarchy) - redraw the canvas/DOM text at most 4 Hz instead of every
+ * rendered frame (up to ~90 Hz in XR), which was rebuilding strings/arrays and
+ * (for the in-XR canvas) repainting + re-uploading a texture every frame. */
+const HUD_UPDATE_INTERVAL_MS = 250;
+
+function hudChanged(a: HudStatus, b: HudStatus, showRejection: boolean, prevShowRejection: boolean): boolean {
+  return (
+    a.tier !== b.tier ||
+    a.mode !== b.mode ||
+    a.selectedObjectId !== b.selectedObjectId ||
+    a.lastRejection !== b.lastRejection ||
+    showRejection !== prevShowRejection ||
+    // Frame timing/depth age change continuously; round so they don't force a
+    // redraw every call while still reflecting real movement once per tick.
+    Math.round(a.frameP95) !== Math.round(b.frameP95) ||
+    Math.round(a.depthAgeMs) !== Math.round(b.depthAgeMs)
+  );
+}
 
 export class InXRHud {
   readonly panel: THREE.Sprite;
   private readonly canvas = document.createElement('canvas');
   private readonly ctx: CanvasRenderingContext2D;
   private readonly texture: THREE.CanvasTexture;
-  private lastDrawKey = '';
+  private lastDrawAt = -Infinity;
+  private lastStatus: HudStatus | null = null;
+  private lastShowRejection = false;
 
   constructor() {
     this.canvas.width = 512;
@@ -62,10 +83,15 @@ export class InXRHud {
   }
 
   update(status: HudStatus, now: number): void {
-    const showRejection = status.lastRejection && now - status.lastRejection.at < REJECTION_DISPLAY_MS;
-    const key = JSON.stringify([status, showRejection]);
-    if (key === this.lastDrawKey) return;
-    this.lastDrawKey = key;
+    const showRejection = Boolean(status.lastRejection && now - status.lastRejection.at < REJECTION_DISPLAY_MS);
+    if (now - this.lastDrawAt < HUD_UPDATE_INTERVAL_MS) return;
+    if (this.lastStatus && !hudChanged(status, this.lastStatus, showRejection, this.lastShowRejection)) {
+      this.lastDrawAt = now;
+      return;
+    }
+    this.lastDrawAt = now;
+    this.lastStatus = status;
+    this.lastShowRejection = showRejection;
 
     const ctx = this.ctx;
     const { width, height } = this.canvas;
@@ -103,6 +129,7 @@ export class InXRHud {
 export class DomHud {
   readonly root: HTMLDivElement;
   private readonly statusEl: HTMLPreElement;
+  private lastDrawAt = -Infinity;
 
   constructor(container: HTMLElement, headless: boolean, buttons: HudButtons) {
     this.root = document.createElement('div');
@@ -151,6 +178,8 @@ export class DomHud {
   }
 
   update(status: HudStatus, decision: QualityDecision, now: number): void {
+    if (now - this.lastDrawAt < HUD_UPDATE_INTERVAL_MS) return;
+    this.lastDrawAt = now;
     const showRejection = status.lastRejection && now - status.lastRejection.at < REJECTION_DISPLAY_MS;
     const lines = [
       `tier ${status.tier} (${decision.reasons.join(',') || 'ok'})`,

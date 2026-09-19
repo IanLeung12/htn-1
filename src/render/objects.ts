@@ -42,6 +42,19 @@ interface Entry {
   hoverOutline: THREE.LineSegments;
   version: string; // cheap dirty-check signature
   gltfUrl?: string;
+  /** Cached flat material list for `solid`, rebuilt only when `solid`'s contents change
+   * (construction, or async gltf swap) - avoids an `Object3D.traverse()` + closure
+   * allocation on every frame in `updateHighlights()`. */
+  materials: THREE.MeshStandardMaterial[];
+}
+
+function collectStandardMaterials(root: THREE.Object3D, out: THREE.MeshStandardMaterial[]): void {
+  out.length = 0;
+  root.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
+      out.push(child.material);
+    }
+  });
 }
 
 const gltfLoader = new GLTFLoader();
@@ -66,10 +79,16 @@ function loadGltf(url: string, onReady: (scene: THREE.Object3D) => void): void {
   );
 }
 
+interface PreviewEntry {
+  objectId: string;
+  mesh: THREE.Mesh;
+}
+
 export class ObjectViews {
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, Entry>();
   private lastVersion = -1;
+  private previewEntry: PreviewEntry | null = null;
   hoveredId: string | null = null;
   grabbedId: string | null = null;
   selectedId: string | null = null;
@@ -126,6 +145,7 @@ export class ObjectViews {
         const solidGroup = entry!.solid as THREE.Group;
         solidGroup.clear();
         solidGroup.add(scene);
+        collectStandardMaterials(entry!.solid, entry!.materials);
       });
     }
   }
@@ -157,7 +177,10 @@ export class ObjectViews {
     hoverOutline.visible = false;
     root.add(hoverOutline);
 
-    return { root, solid, hoverOutline, version: '' };
+    const materials: THREE.MeshStandardMaterial[] = [];
+    collectStandardMaterials(solid, materials);
+
+    return { root, solid, hoverOutline, version: '', materials };
   }
 
   private updateHighlights(): void {
@@ -166,33 +189,44 @@ export class ObjectViews {
       const isGrabbed = id === this.grabbedId;
       const isHovered = id === this.hoveredId;
       entry.hoverOutline.visible = entry.hoverOutline.visible || (isHovered && entry.solid.visible === false);
-      const mats: THREE.MeshStandardMaterial[] = [];
-      entry.solid.traverse((child) => {
-        if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
-          mats.push(child.material);
-        }
-      });
-      for (const mat of mats) {
-        mat.emissive.setHex(isGrabbed ? 0x333333 : isSelected ? 0x222222 : 0x000000);
+      const hex = isGrabbed ? 0x333333 : isSelected ? 0x222222 : 0x000000;
+      for (const mat of entry.materials) {
+        mat.emissive.setHex(hex);
       }
     }
   }
 
-  /** Ghost preview: semi-transparent copy at preview.pose. */
+  /**
+   * Ghost preview: semi-transparent copy at preview.pose. Called every rendered
+   * frame while a grab is in progress; the mesh/geometry/material are built once
+   * per preview target and only its transform is touched thereafter, instead of
+   * allocating (and leaking - `Group.clear()` does not dispose GPU resources) a
+   * fresh mesh every frame of the drag.
+   */
   updatePreview(snapshot: SceneSnapshot, previewGroup: THREE.Group): void {
-    previewGroup.clear();
     const preview = snapshot.preview;
-    if (!preview) return;
-    const obj = snapshot.objects[preview.objectId];
-    if (!obj) return;
-    const geometry = geometryForProxy(obj.interactionProxy);
-    const material = new THREE.MeshStandardMaterial({
-      color: obj.visual.color ?? 0x8899aa,
-      transparent: true,
-      opacity: 0.4,
-      depthWrite: false,
-    });
-    const mesh = new THREE.Mesh(geometry, material);
+    const obj = preview ? snapshot.objects[preview.objectId] : undefined;
+
+    if (!preview || !obj) {
+      this.clearPreview(previewGroup);
+      return;
+    }
+
+    if (!this.previewEntry || this.previewEntry.objectId !== preview.objectId) {
+      this.clearPreview(previewGroup);
+      const geometry = geometryForProxy(obj.interactionProxy);
+      const material = new THREE.MeshStandardMaterial({
+        color: obj.visual.color ?? 0x8899aa,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      previewGroup.add(mesh);
+      this.previewEntry = { objectId: preview.objectId, mesh };
+    }
+
+    const mesh = this.previewEntry.mesh;
     mesh.position.set(preview.pose.position.x, preview.pose.position.y, preview.pose.position.z);
     mesh.quaternion.set(
       preview.pose.rotation.x,
@@ -200,7 +234,14 @@ export class ObjectViews {
       preview.pose.rotation.z,
       preview.pose.rotation.w,
     );
-    previewGroup.add(mesh);
+  }
+
+  private clearPreview(previewGroup: THREE.Group): void {
+    if (!this.previewEntry) return;
+    previewGroup.remove(this.previewEntry.mesh);
+    this.previewEntry.mesh.geometry.dispose();
+    (this.previewEntry.mesh.material as THREE.Material).dispose();
+    this.previewEntry = null;
   }
 
   dispose(): void {
