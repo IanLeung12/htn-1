@@ -46,7 +46,7 @@ import { RegionManager } from './regions';
 import { INACTIVE_GUIDE, makeActiveGuide, planCaptureViewpoints, wrapSourceForGuide } from './guide';
 import { createCapturePipeline } from '@/capture';
 import { createPlateTextureRegistry } from '@/capture';
-import { createFrameStore, ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
+import { appearanceFrameKey, createFrameStore, ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
 import type { CameraFrame, CameraFrameSource } from '@/capture/contract';
 import { BackgroundHull } from '@/render/background-hull';
 import { planRoomShellViewpoints } from './room-shell';
@@ -161,7 +161,14 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
 
   const depth = new DepthOcclusion(renderer);
 
-  const views = new ObjectViews();
+  // Shared with the capture pipeline: holds the raw frames behind a clean
+  // plate (per object id), an object's own "appearance pass" frames (see
+  // capture/frame-store.ts's appearanceFrameKey), and the room-shell orbit
+  // capture (ROOM_SHELL_FRAME_ID) so the renderer can reproject the real
+  // world from wherever the head is.
+  const frameStore = createFrameStore();
+
+  const views = new ObjectViews(frameStore);
   scene.add(views.group);
   const previewGroup = new THREE.Group();
   scene.add(previewGroup);
@@ -169,11 +176,6 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   const textureRegistry = createPlateTextureRegistry();
   const plates = new PlateRenderer(textureRegistry);
   scene.add(plates.group);
-
-  // Shared with the capture pipeline: holds the raw frames behind a clean
-  // plate (per object id) and the room-shell orbit capture (ROOM_SHELL_FRAME_ID)
-  // so the renderer can reproject the real background from wherever the head is.
-  const frameStore = createFrameStore();
 
   const shell = new ShellRenderer(frameStore);
   scene.add(shell.occluderGroup, shell.visibleGroup);
@@ -457,6 +459,40 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     }
   }
 
+  /**
+   * "Object pass" (see AppHandle.captureObjectAppearance): captures the same
+   * planned arc `captureCleanPlate` will later use, but WITH the object
+   * still physically present, so the renderer has the object's own real
+   * depth/texture to draw once it moves (src/render/objects.ts). Must run
+   * before the object is hidden/lifted - `captureCleanPlate` is the
+   * complementary pass that runs after.
+   */
+  async function captureObjectAppearance(objectId: string): Promise<{ frames: number }> {
+    const snapshot = store.current;
+    const obj = snapshot.objects[objectId];
+    if (!obj) return { frames: 0 };
+
+    const supportSurface = obj.supportSurfaces[0] ? snapshot.surfaces[obj.supportSurfaces[0]] : undefined;
+    const source = window.__cameraFrameSource ?? NO_CAMERA_SOURCE;
+    const plan = planCaptureViewpoints(obj, supportSurface, poseFromMatrix(camera));
+
+    const frames: CameraFrame[] = [];
+    for (const viewpoint of plan.capture) {
+      const frame = await source.capture(viewpoint);
+      if (frame) frames.push(frame);
+    }
+    frameStore.put(appearanceFrameKey(objectId), frames);
+
+    if (frames.length > 0) {
+      store.dispatch(
+        { intent: { kind: 'setVisual', objectId, visual: { kind: 'baked' } }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+        conditions(),
+      );
+    }
+
+    return { frames: frames.length };
+  }
+
   async function captureRoomShell(): Promise<{ framesCaptured: number }> {
     const source = window.__cameraFrameSource ?? NO_CAMERA_SOURCE;
     if (!source.available) {
@@ -641,6 +677,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     },
     runCandidateDiscovery,
     captureCleanPlate,
+    captureObjectAppearance,
     captureRoomShell,
     grab(objectId: string, hand: 'left' | 'right'): boolean {
       return interaction.grab(objectId, hand);

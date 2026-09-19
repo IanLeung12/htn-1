@@ -47,6 +47,15 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   fs.mkdirSync(OUT, { recursive: true });
   await expect.poll(async () => evalApp(() => Object.keys(window.__realityEditor!.store.current.surfaces).length), { timeout: 10_000 }).toBeGreaterThan(0);
 
+  // Centre of the left eye's viewport - used throughout this spec to sample
+  // whatever a head pose looking directly at a world point projects to.
+  const viewport = simPage.viewportSize();
+  expect(viewport).not.toBeNull();
+  const eyeWidth = viewport!.width / 2;
+  const eyeHeight = viewport!.height;
+  const centerX = Math.round(eyeWidth / 2);
+  const centerY = Math.round(eyeHeight / 2);
+
   await simPage.evaluate(() => {
     window.__sim!.setHead({ x: 0, y: 1.6, z: 1.2 });
     window.__sim!.lookAt({ x: -0.5, y: 0.8, z: -0.5 });
@@ -69,16 +78,116 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   const tableId = await evalApp((ids) => ids.find((id) => window.__realityEditor!.store.current.objects[id]!.label === 'table') ?? ids[0], ids);
   await evalApp((id) => window.__testHelpers!.dispatchIntent({ kind: 'approve', objectId: id, approved: true }, 'test'), tableId!);
   const pos = await evalApp((id) => window.__realityEditor!.store.current.objects[id]!.currentPose.position, tableId!);
+  const originalPose = await evalApp((id) => window.__realityEditor!.store.current.objects[id]!.originalPose, tableId!);
   const vol = await evalApp((p) => { const vs = window.__sim!.listVolumes().filter((v) => v.kind !== 'plane'); let b = vs[0]!; let bd = Infinity; for (const v of vs) { const d = Math.hypot(v.pose.position.x - p.x, v.pose.position.z - p.z); if (d < bd) { bd = d; b = v; } } return b.id; }, pos);
+
+  // Object-appearance pass ("move the table and see the table"): this MUST
+  // run before the object is hidden/lifted - the object is still physically
+  // present, unlike the clean-plate pass below.
+  const appearance = await evalApp((id) => window.__realityEditor!.captureObjectAppearance?.(id), tableId!);
+
   await evalApp((v) => window.__sim!.hideVolume(v), vol);
   const cap = await evalApp((id) => window.__realityEditor!.captureCleanPlate(id), tableId!);
   await evalApp((v) => window.__sim!.showVolume(v), vol);
   await simPage.evaluate((p) => { window.__sim!.setHead({ x: p.x + 0.3, y: 1.6, z: p.z + 1.6 }); window.__sim!.lookAt({ x: p.x, y: 0.4, z: p.z }); }, pos);
   await simPage.waitForTimeout(300);
   await simPage.screenshot({ path: path.join(OUT, '04-table-before-delete.png') });
+
+  // --- Moved-object appearance: "move the table and see the table" --------
+  // Match guided capture's FIRST arc viewpoint exactly (src/app/guide.ts's
+  // `planCaptureViewpoints`: bearing0 = the head's bearing to the footprint
+  // centre at capture time, i.e. right here - the head has not moved since
+  // the '01-live-overlay' setHead call above - height=HEIGHT_MIN_M=1.2m,
+  // distance=DIST_MIN_M=1.0m), so the "before" reference below is looking
+  // from the exact real-world viewpoint `captureObjectAppearance` used to
+  // build the appearance frame that should now be reprojected for the moved
+  // copy - any other angle risks the guided arc's OTHER viewpoints (whose
+  // real-world sightline may be partly blocked by this room's jagged scan
+  // geometry) dominating instead.
+  const ARC_HEAD_POSE = { x: 0, y: 1.6, z: 1.2 }; // must match the setHead() call preceding captureObjectAppearance
+  const MOVE_VIEW_RADIUS_M = 1.0;
+  const MOVE_VIEW_HEIGHT_M = 1.2;
+  const MOVE_VIEW_ANGLE = Math.atan2(ARC_HEAD_POSE.z - pos.z, ARC_HEAD_POSE.x - pos.x);
+  const moveViewOffset = { x: MOVE_VIEW_RADIUS_M * Math.cos(MOVE_VIEW_ANGLE), z: MOVE_VIEW_RADIUS_M * Math.sin(MOVE_VIEW_ANGLE) };
+  const MOVE_OFFSET_M = 0.6;
+  const movedPos = { x: pos.x + MOVE_OFFSET_M, y: pos.y, z: pos.z };
+
+  // "Before" reference: the table's real, physically-present appearance,
+  // viewed from the same relative offset the "after" screenshot below will
+  // use around the table's NEW position - captured while the table still
+  // sits at its ORIGINAL position, before any move.
+  await simPage.evaluate(({ p, offset, h }) => {
+    window.__sim!.setHead({ x: p.x + offset.x, y: h, z: p.z + offset.z });
+    window.__sim!.lookAt(p);
+  }, { p: pos, offset: moveViewOffset, h: MOVE_VIEW_HEIGHT_M });
+  await simPage.waitForTimeout(300);
+  await simPage.screenshot({ path: path.join(OUT, '08-table-before-move-reference.png') });
+
+  const moveResult = await evalApp(
+    (args) => window.__testHelpers!.dispatchIntent(
+      { kind: 'move', objectId: args.id, pose: { position: args.pose, rotation: { x: 0, y: 0, z: 0, w: 1 } } },
+      'test',
+    ),
+    { id: tableId!, pose: movedPos },
+  );
+  await simPage.waitForTimeout(400);
+
+  // "After": same relative viewpoint, now around the table's new position.
+  // If the moved copy is rendered as its own captured depth/texture
+  // (src/render/objects.ts), this should closely resemble the "before"
+  // reference above; the old primitive-box stand-in would not.
+  await simPage.evaluate(({ p, offset, h }) => {
+    window.__sim!.setHead({ x: p.x + offset.x, y: h, z: p.z + offset.z });
+    window.__sim!.lookAt(p);
+  }, { p: movedPos, offset: moveViewOffset, h: MOVE_VIEW_HEIGHT_M });
+  await simPage.waitForTimeout(300);
+  await simPage.screenshot({ path: path.join(OUT, '08-table-moved.png') });
+
+  const beforeMovePng = PNG.sync.read(fs.readFileSync(path.join(OUT, '08-table-before-move-reference.png')));
+  const afterMovePng = PNG.sync.read(fs.readFileSync(path.join(OUT, '08-table-moved.png')));
+  const moveMad = meanAbsDiff(beforeMovePng, afterMovePng, centerX - 60, centerY - 60, 120, 120);
+  console.log('MOVE', JSON.stringify({ appearance, moveResult: moveResult.ok, moveMad }));
+
+  expect(moveResult.ok, 'moving the approved, tier-A physical table should be permitted').toBe(true);
+  expect(
+    moveMad,
+    'the moved table should resemble its own captured appearance from the same relative viewpoint, not a flat primitive-box colour',
+  ).toBeLessThanOrEqual(20);
+
+  // Move it back to its original pose so the rest of this spec (delete /
+  // captured-shell ground truth, both keyed on `pos`) is unaffected.
+  await evalApp((args) => window.__testHelpers!.dispatchIntent({ kind: 'move', objectId: args.id, pose: args.pose }, 'test'), { id: tableId!, pose: originalPose });
+  await simPage.waitForTimeout(300);
   const del = await evalApp((id) => window.__testHelpers!.dispatchIntent({ kind: 'delete', objectId: id }, 'test'), tableId!);
   await simPage.waitForTimeout(400);
   await simPage.screenshot({ path: path.join(OUT, '05-table-deleted.png') });
+
+  // --- Captured-shell carve: the shell must not keep showing the deleted
+  // table's old box/scan-mesh geometry (src/render/shell.ts's carve of the
+  // global mesh + hiding the object's own surface tile). Ground truth: the
+  // same captured-shell render but with the real SEM volume ALSO hidden -
+  // if the carve/hide worked, the app's own render should already match it
+  // without needing the volume physically hidden (the background hull fills
+  // the resulting hole with a depth-correct reprojection in both modes).
+  await evalApp(() => window.__testHelpers!.dispatchIntent({ kind: 'setMode', mode: 'captured-shell' }, 'test'));
+  await simPage.evaluate((p) => {
+    window.__sim!.setHead({ x: p.x, y: 1.7, z: p.z + 1.6 });
+    window.__sim!.lookAt({ x: p.x, y: 0.4, z: p.z });
+  }, pos);
+  await simPage.waitForTimeout(500);
+  await simPage.screenshot({ path: path.join(OUT, '09-captured-shell-after-delete.png') });
+
+  await evalApp((v) => window.__sim!.hideVolume(v), vol);
+  await simPage.waitForTimeout(400);
+  await simPage.screenshot({ path: path.join(OUT, '09-captured-shell-after-delete-ground-truth.png') });
+  await evalApp((v) => window.__sim!.showVolume(v), vol);
+  await simPage.waitForTimeout(300);
+
+  const shellPng = PNG.sync.read(fs.readFileSync(path.join(OUT, '09-captured-shell-after-delete.png')));
+  const shellTruthPng = PNG.sync.read(fs.readFileSync(path.join(OUT, '09-captured-shell-after-delete-ground-truth.png')));
+  const shellMad = meanAbsDiff(shellPng, shellTruthPng, centerX - 150, centerY - 150, 300, 300);
+  console.log('SHELL_CARVE', JSON.stringify({ shellMad }));
+  expect(shellMad, 'captured-shell after delete should no longer show the table box').toBeLessThanOrEqual(15);
 
   // Live-overlay mode, viewed from the side (not top-down): a flat plate on
   // the floor cannot hide a 3D object seen edge-on, which is exactly what
@@ -86,13 +195,6 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   // table's original position dead-center so "the projected centre of the
   // deleted table's original box" is just the middle of each eye's viewport.
   await evalApp(() => window.__testHelpers!.dispatchIntent({ kind: 'setMode', mode: 'live-overlay' }, 'test'));
-
-  const viewport = simPage.viewportSize();
-  expect(viewport).not.toBeNull();
-  const eyeWidth = viewport!.width / 2;
-  const eyeHeight = viewport!.height;
-  const centerX = Math.round(eyeWidth / 2);
-  const centerY = Math.round(eyeHeight / 2);
 
   // Two head positions at ~1.2m from the table, 45 degrees apart, both
   // looking straight at its original centre. If the hull only reprojected a

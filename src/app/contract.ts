@@ -67,6 +67,19 @@ export interface AppHandle {
    */
   captureCleanPlate(objectId: string): Promise<{ tier: string; coverage: number }>;
   /**
+   * "Object pass": captures frames from the same planned viewpoints as
+   * `captureCleanPlate` but WITH the physical object still present (call
+   * this BEFORE hiding/lifting it, unlike `captureCleanPlate` which must run
+   * after). Frames are stored in the shared FrameStore under
+   * `obj-appearance:<objectId>` (see src/capture/frame-store.ts) and, on
+   * success, the object's `visual` is set to `{ kind: 'baked' }` via an
+   * additive `setVisual` system intent (src/core/types.ts) so a later move
+   * renders the object's own captured depth/texture instead of a primitive
+   * box (src/render/objects.ts). Optional: undefined until main.ts wires it
+   * in, same convention as `captureRoomShell`.
+   */
+  captureObjectAppearance?(objectId: string): Promise<{ frames: number }>;
+  /**
    * Guided orbit capture of the whole room (8 viewpoints around the centre
    * looking outward at the walls, plus 4 looking down at the floor), stored
    * under `ROOM_SHELL_FRAME_ID` in the shared FrameStore so captured-shell

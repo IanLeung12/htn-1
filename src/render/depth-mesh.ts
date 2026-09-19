@@ -18,6 +18,7 @@
  */
 import * as THREE from 'three';
 import type { CameraFrame } from '@/capture/contract';
+import type { Vec3 } from '@/core/types';
 import { unprojectPixel } from '@/capture/geom';
 
 /** Neighbouring pixels whose depth differs by more than this (metres) are not bridged by a triangle. */
@@ -26,7 +27,30 @@ const DEPTH_DISCONTINUITY_M = 0.15;
 /** Vertex grids stay near this even when a frame's raw pixel count is much larger. */
 const MAX_VERTICES = 64_000;
 
-const geometryCache = new WeakMap<CameraFrame, THREE.BufferGeometry | null>();
+/** Optional world-space AABB filter: only triangles whose centroid falls inside survive. */
+export interface KeepInsideBox {
+  min: Vec3;
+  max: Vec3;
+}
+
+// Cache is keyed by frame, then by a stable string signature of the box
+// filter used (so the same frame can supply both an unfiltered background
+// hull mesh and a box-filtered object-appearance mesh without recomputation
+// clobbering each other).
+const geometryCache = new WeakMap<CameraFrame, Map<string, THREE.BufferGeometry | null>>();
+
+function boxKey(box?: KeepInsideBox): string {
+  if (!box) return '*';
+  return `${box.min.x},${box.min.y},${box.min.z}|${box.max.x},${box.max.y},${box.max.z}`;
+}
+
+function insideBox(box: KeepInsideBox, p: THREE.Vector3): boolean {
+  return (
+    p.x >= box.min.x && p.x <= box.max.x &&
+    p.y >= box.min.y && p.y <= box.max.y &&
+    p.z >= box.min.z && p.z <= box.max.z
+  );
+}
 
 /** Subsample step for one axis so a `width x height` frame stays under `MAX_VERTICES` vertices. */
 function stepFor(width: number, height: number): number {
@@ -42,15 +66,27 @@ function stepFor(width: number, height: number): number {
  * depth buffer into world space. Returns null when the frame has no depth
  * (caller should fall back to the flat proxy-box projection) or the grid
  * would be degenerate.
+ *
+ * `keepInsideBox`, when given, drops every triangle whose centroid falls
+ * outside a world-space AABB - used by object-appearance rendering
+ * (src/render/objects.ts) so a moved object's depth mesh only ever contains
+ * the object's own surface, not the floor/wall triangles the same frame also
+ * unprojects around it.
  */
-export function getDepthMeshGeometry(frame: CameraFrame): THREE.BufferGeometry | null {
-  if (geometryCache.has(frame)) return geometryCache.get(frame)!;
-  const geometry = frame.depth ? buildDepthMeshGeometry(frame, frame.depth) : null;
-  geometryCache.set(frame, geometry);
+export function getDepthMeshGeometry(frame: CameraFrame, keepInsideBox?: KeepInsideBox): THREE.BufferGeometry | null {
+  let byKey = geometryCache.get(frame);
+  if (!byKey) {
+    byKey = new Map();
+    geometryCache.set(frame, byKey);
+  }
+  const key = boxKey(keepInsideBox);
+  if (byKey.has(key)) return byKey.get(key)!;
+  const geometry = frame.depth ? buildDepthMeshGeometry(frame, frame.depth, keepInsideBox) : null;
+  byKey.set(key, geometry);
   return geometry;
 }
 
-function buildDepthMeshGeometry(frame: CameraFrame, depthBuffer: Float32Array): THREE.BufferGeometry | null {
+function buildDepthMeshGeometry(frame: CameraFrame, depthBuffer: Float32Array, keepInsideBox?: KeepInsideBox): THREE.BufferGeometry | null {
   const { width, height, pose, fovY, aspect } = frame;
   const step = stepFor(width, height);
   const gw = Math.floor((width - 1) / step) + 1;
@@ -85,6 +121,7 @@ function buildDepthMeshGeometry(frame: CameraFrame, depthBuffer: Float32Array): 
   }
 
   const indices: number[] = [];
+  const centroid = new THREE.Vector3();
   const pushTriIfFlat = (a: number, b: number, c: number): void => {
     if (!valid[a] || !valid[b] || !valid[c]) return;
     const da = depths[a]!;
@@ -92,6 +129,14 @@ function buildDepthMeshGeometry(frame: CameraFrame, depthBuffer: Float32Array): 
     const dc = depths[c]!;
     const spread = Math.max(da, db, dc) - Math.min(da, db, dc);
     if (spread > DEPTH_DISCONTINUITY_M) return;
+    if (keepInsideBox) {
+      centroid.set(
+        (positions[a * 3]! + positions[b * 3]! + positions[c * 3]!) / 3,
+        (positions[a * 3 + 1]! + positions[b * 3 + 1]! + positions[c * 3 + 1]!) / 3,
+        (positions[a * 3 + 2]! + positions[b * 3 + 2]! + positions[c * 3 + 2]!) / 3,
+      );
+      if (!insideBox(keepInsideBox, centroid)) return;
+    }
     indices.push(a, b, c);
   };
 

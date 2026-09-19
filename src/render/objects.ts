@@ -11,9 +11,48 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { Aabb, EditableObject, ProxyShape, SceneSnapshot } from '@/core/types';
+import type { CameraFrame } from '@/capture/contract';
+import type { FrameStore } from '@/capture/frame-store';
+import { appearanceFrameKey } from '@/capture/frame-store';
+import { createUnlitTextureMaterial, setUnlitMaterialFrame } from './projective';
+import { getDepthMeshGeometry } from './depth-mesh';
 
 const EPS_POS = 0.005;
 const EPS_ROT = 0.001;
+
+/** Padding added around an object's original occlusion box for the appearance box filter (see BOX_EXPAND_M usage below). */
+const APPEARANCE_BOX_EXPAND_M = 0.03;
+const RENDER_ORDER_APPEARANCE_STENCIL = 0.5;
+const RENDER_ORDER_APPEARANCE_DEPTH = 1;
+
+/** Allocates small stable integers (1..255) for stencil refs, reused once freed. Offset from
+ * render/background-hull.ts's own pool (which starts at 1) so the two features - a moved
+ * object's own appearance stencil here, and the hole-it-left-behind stencil there - never
+ * reuse the same GPU stencil value for two different objects in the same rendered frame. */
+class StencilRefPool {
+  private next: number;
+  private free: number[] = [];
+  private assigned = new Map<string, number>();
+
+  constructor(start: number) {
+    this.next = start;
+  }
+
+  acquire(id: string): number {
+    const existing = this.assigned.get(id);
+    if (existing !== undefined) return existing;
+    const ref = this.free.pop() ?? this.next++;
+    this.assigned.set(id, ref);
+    return ref;
+  }
+
+  release(id: string): void {
+    const ref = this.assigned.get(id);
+    if (ref === undefined) return;
+    this.assigned.delete(id);
+    this.free.push(ref);
+  }
+}
 
 function posesEqual(a: EditableObject['originalPose'], b: EditableObject['currentPose']): boolean {
   const dp = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y, a.position.z - b.position.z);
@@ -46,6 +85,25 @@ interface Entry {
    * (construction, or async gltf swap) - avoids an `Object3D.traverse()` + closure
    * allocation on every frame in `updateHighlights()`. */
   materials: THREE.MeshStandardMaterial[];
+  /**
+   * "Move the table and see the table": when `obj.visual.kind === 'baked'`
+   * and the object is displaced from `originalPose`, this group (a CHILD of
+   * `root`, so it inherits root's current-pose transform for free - root is
+   * positioned/oriented at `obj.currentPose` every frame, see `syncObject`)
+   * holds the object's own captured depth meshes, expressed in
+   * `originalPose`-relative local space. Parenting them under `root` is
+   * exactly the transform the spec calls for: local = originalPose^-1 *
+   * worldVertex, then root (currentPose) * local = (currentPose *
+   * originalPose^-1) * worldVertex, i.e. the appearance is drawn at the
+   * delta between where the object used to be and where it is now.
+   */
+  appearanceGroup: THREE.Group;
+  appearanceStencilMesh: THREE.Mesh;
+  appearanceStencilMaterial: THREE.MeshBasicMaterial;
+  appearanceStencilRef: number;
+  /** Built lazily once frames are available; `undefined` until first attempted. */
+  appearanceDepthMeshes: Map<CameraFrame, THREE.Mesh | null> | undefined;
+  appearanceHasMesh: boolean;
 }
 
 function collectStandardMaterials(root: THREE.Object3D, out: THREE.MeshStandardMaterial[]): void {
@@ -103,11 +161,21 @@ interface PreviewEntry {
 export class ObjectViews {
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, Entry>();
+  private readonly appearanceStencilRefs = new StencilRefPool(101);
   private lastVersion = -1;
   private previewEntry: PreviewEntry | null = null;
   hoveredId: string | null = null;
   grabbedId: string | null = null;
   selectedId: string | null = null;
+
+  /**
+   * `frameStore` supplies each object's "appearance pass" frames (see
+   * `capture/frame-store.ts`'s `appearanceFrameKey`) for rendering a moved
+   * physical object with its own captured look instead of a primitive box.
+   * Optional so existing callers/tests that only build proxy geometry still
+   * work unchanged.
+   */
+  constructor(private readonly frameStore?: FrameStore) {}
   /**
    * Optional hook fired once a gltf-visual object's model finishes loading,
    * with the model's local-space bounding box (see `localBoundsOf`). The app
@@ -144,6 +212,7 @@ export class ObjectViews {
       if (!seen.has(id)) {
         this.group.remove(entry.root);
         this.entries.delete(id);
+        this.appearanceStencilRefs.release(id);
       }
     }
     this.updateHighlights();
@@ -169,7 +238,15 @@ export class ObjectViews {
       obj.currentPose.rotation.w,
     );
 
-    entry.solid.visible = obj.visible && showSolid;
+    // "Move the table and see the table": a displaced physical object whose
+    // appearance was captured renders its own depth meshes instead of the
+    // primitive-box stand-in, provided at least one usable mesh was built
+    // (see syncAppearance) - otherwise fall back to the box as before.
+    const wantsAppearance = obj.visible && moved && obj.visual.kind === 'baked' && !!this.frameStore;
+    const appearanceActive = wantsAppearance ? this.syncAppearance(entry, obj) : false;
+    if (!wantsAppearance) entry.appearanceGroup.visible = false;
+
+    entry.solid.visible = obj.visible && showSolid && !appearanceActive;
     entry.hoverOutline.visible = obj.visible && !showSolid && this.hoveredId === obj.id;
 
     if (obj.visual.kind === 'gltf' && obj.visual.url && entry.gltfUrl !== obj.visual.url) {
@@ -216,7 +293,120 @@ export class ObjectViews {
     const materials: THREE.MeshStandardMaterial[] = [];
     collectStandardMaterials(solid, materials);
 
-    return { root, solid, hoverOutline, version: '', materials };
+    // Appearance stencil: stamps the object's occlusion-proxy silhouette at
+    // the CURRENT pose (this mesh sits at root's local origin, and root is
+    // positioned/oriented at currentPose every frame) so the depth meshes
+    // below only ever paint inside that silhouette, never spilling onto
+    // whatever real geometry happens to be nearby at the new location.
+    const appearanceStencilRef = this.appearanceStencilRefs.acquire(obj.id);
+    const appearanceStencilMaterial = new THREE.MeshBasicMaterial({
+      colorWrite: false,
+      depthWrite: false,
+      depthTest: true,
+      stencilWrite: true,
+      stencilFunc: THREE.AlwaysStencilFunc,
+      stencilRef: appearanceStencilRef,
+      stencilZPass: THREE.ReplaceStencilOp,
+    });
+    const appearanceStencilMesh = new THREE.Mesh(geometryForProxy(obj.occlusionProxy), appearanceStencilMaterial);
+    appearanceStencilMesh.name = `object-appearance-stencil:${obj.id}`;
+    appearanceStencilMesh.renderOrder = RENDER_ORDER_APPEARANCE_STENCIL;
+    appearanceStencilMesh.visible = false;
+
+    const appearanceGroup = new THREE.Group();
+    appearanceGroup.name = `object-appearance:${obj.id}`;
+    appearanceGroup.visible = false;
+    appearanceGroup.add(appearanceStencilMesh);
+    root.add(appearanceGroup);
+
+    return {
+      root,
+      solid,
+      hoverOutline,
+      version: '',
+      materials,
+      appearanceGroup,
+      appearanceStencilMesh,
+      appearanceStencilMaterial,
+      appearanceStencilRef,
+      appearanceDepthMeshes: undefined,
+      appearanceHasMesh: false,
+    };
+  }
+
+  /**
+   * Lazily builds (once per object; frames never change while a capture is
+   * held) the object's appearance depth meshes from its `obj-appearance:<id>`
+   * frames, box-filtered to its own original occlusion volume (expanded 3cm)
+   * so floor/wall geometry the same frames also saw is excluded. Returns
+   * whether at least one usable mesh exists (caller falls back to the
+   * primitive box otherwise).
+   */
+  private syncAppearance(entry: Entry, obj: EditableObject): boolean {
+    if (entry.appearanceDepthMeshes === undefined) {
+      entry.appearanceDepthMeshes = new Map();
+      const frames = this.frameStore?.get(appearanceFrameKey(obj.id)) ?? [];
+      const proxy = obj.occlusionProxy;
+      const keepInsideBox =
+        proxy.kind === 'box'
+          ? {
+              min: {
+                x: obj.originalPose.position.x - proxy.halfExtents.x - APPEARANCE_BOX_EXPAND_M,
+                y: obj.originalPose.position.y - proxy.halfExtents.y - APPEARANCE_BOX_EXPAND_M,
+                z: obj.originalPose.position.z - proxy.halfExtents.z - APPEARANCE_BOX_EXPAND_M,
+              },
+              max: {
+                x: obj.originalPose.position.x + proxy.halfExtents.x + APPEARANCE_BOX_EXPAND_M,
+                y: obj.originalPose.position.y + proxy.halfExtents.y + APPEARANCE_BOX_EXPAND_M,
+                z: obj.originalPose.position.z + proxy.halfExtents.z + APPEARANCE_BOX_EXPAND_M,
+              },
+            }
+          : undefined;
+
+      const invOriginal = new THREE.Matrix4()
+        .compose(
+          new THREE.Vector3(obj.originalPose.position.x, obj.originalPose.position.y, obj.originalPose.position.z),
+          new THREE.Quaternion(
+            obj.originalPose.rotation.x,
+            obj.originalPose.rotation.y,
+            obj.originalPose.rotation.z,
+            obj.originalPose.rotation.w,
+          ),
+          new THREE.Vector3(1, 1, 1),
+        )
+        .invert();
+
+      let anyMesh = false;
+      for (const frame of frames) {
+        const worldGeometry = getDepthMeshGeometry(frame, keepInsideBox);
+        if (!worldGeometry) {
+          entry.appearanceDepthMeshes.set(frame, null);
+          continue;
+        }
+        // Re-express the (world-space) depth-mesh vertices relative to the
+        // object's ORIGINAL pose, so parenting under `root` (positioned at
+        // the CURRENT pose every frame) applies exactly the delta transform
+        // currentPose . originalPose^-1 the spec calls for.
+        const localGeometry = worldGeometry.clone().applyMatrix4(invOriginal);
+        const material = createUnlitTextureMaterial();
+        material.stencilWrite = true;
+        material.stencilFunc = THREE.EqualStencilFunc;
+        material.stencilRef = entry.appearanceStencilRef;
+        setUnlitMaterialFrame(material, frame);
+        const mesh = new THREE.Mesh(localGeometry, material);
+        mesh.name = `object-appearance-depth:${obj.id}:${frame.timestamp}`;
+        mesh.renderOrder = RENDER_ORDER_APPEARANCE_DEPTH;
+        mesh.frustumCulled = false;
+        entry.appearanceGroup.add(mesh);
+        entry.appearanceDepthMeshes.set(frame, mesh);
+        anyMesh = true;
+      }
+      entry.appearanceHasMesh = anyMesh;
+    }
+
+    entry.appearanceGroup.visible = entry.appearanceHasMesh;
+    entry.appearanceStencilMesh.visible = entry.appearanceHasMesh;
+    return entry.appearanceHasMesh;
   }
 
   private updateHighlights(): void {

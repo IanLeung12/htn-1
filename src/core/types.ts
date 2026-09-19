@@ -264,7 +264,18 @@ export type Intent =
       occlusion: ProxyShape;
     }
   | { kind: 'preview'; objectId: string; pose: Pose; action: EditAction }
-  | { kind: 'clearPreview' };
+  | { kind: 'clearPreview' }
+  /**
+   * Additive, system-only: attach/replace an object's captured-appearance
+   * visual asset (see src/app/main.ts's `captureObjectAppearance` and
+   * src/capture/frame-store.ts's `obj-appearance:<objectId>` frames). Unlike
+   * `replace` (a user edit, undoable, changes what asset the object *is*),
+   * `setVisual` never touches undo history and never changes `replacedBy` -
+   * it just records that the object's own real appearance was captured, so
+   * the renderer can show it instead of a primitive box once the object
+   * moves (src/render/objects.ts).
+   */
+  | { kind: 'setVisual'; objectId: string; visual: VisualAssetRef };
 
 export type IntentSource = 'hand' | 'controller' | 'voice' | 'ui' | 'system' | 'test';
 

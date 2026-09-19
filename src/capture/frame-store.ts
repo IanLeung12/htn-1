@@ -31,3 +31,18 @@ export function createFrameStore(): FrameStore {
 
 /** Id the room-shell orbit capture is stored under (see src/app/main.ts's captureRoomShell). */
 export const ROOM_SHELL_FRAME_ID = 'room-shell';
+
+/**
+ * FrameStore key an object's "appearance pass" is stored under: frames taken
+ * from the same planned viewpoints as the clean-plate capture but WITH the
+ * physical object still present (see src/app/main.ts's
+ * `captureObjectAppearance`), so a moved copy of the object can be rendered
+ * from its own real depth/texture instead of a primitive box (see
+ * src/render/objects.ts). Namespaced separately from `objectId` itself
+ * (which frame-store keys already use for the object's clean-plate/background
+ * frames, see src/render/background-hull.ts) so the two capture passes never
+ * collide in the same FrameStore.
+ */
+export function appearanceFrameKey(objectId: string): string {
+  return `obj-appearance:${objectId}`;
+}

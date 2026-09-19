@@ -17,7 +17,7 @@
  * lower-resolution/laggier depth-sensing estimate for the same real surface.
  */
 import * as THREE from 'three';
-import type { Region, SceneSnapshot, Surface, Vec3 } from '@/core/types';
+import type { EditableObject, Region, SceneSnapshot, Surface, Vec3 } from '@/core/types';
 import type { RawGlobalMesh } from '@/xr/scene-understanding';
 import type { CameraFrame } from '@/capture/contract';
 import type { FrameStore } from '@/capture/frame-store';
@@ -25,6 +25,83 @@ import { ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
 import { inFrame, projectPoint } from '@/capture/geom';
 import { quatRotateVec3 } from '@/core/math';
 import { createProjectiveMaterial, setMaterialFrame } from './projective';
+
+/** Padding added around a carved object's original box, except downward (never eats the floor). */
+const CARVE_EXPAND_M = 0.03;
+
+/** True for a physical object that should have its original footprint carved out of the global mesh: hidden, or displaced from where it was captured. */
+function isCarved(obj: EditableObject): boolean {
+  if (obj.origin !== 'physical') return false;
+  if (!obj.visible) return true;
+  const a = obj.originalPose.position;
+  const b = obj.currentPose.position;
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) > 0.005;
+}
+
+interface CarveBox {
+  min: Vec3;
+  max: Vec3;
+}
+
+/** World-space carve box for a physical object's ORIGINAL occlusion proxy, expanded 3cm (never below its bottom face). */
+function carveBoxFor(obj: EditableObject): CarveBox | undefined {
+  const proxy = obj.occlusionProxy;
+  if (proxy.kind !== 'box') return undefined;
+  const c = obj.originalPose.position;
+  const he = proxy.halfExtents;
+  return {
+    min: { x: c.x - he.x - CARVE_EXPAND_M, y: c.y - he.y, z: c.z - he.z - CARVE_EXPAND_M },
+    max: { x: c.x + he.x + CARVE_EXPAND_M, y: c.y + he.y + CARVE_EXPAND_M, z: c.z + he.z + CARVE_EXPAND_M },
+  };
+}
+
+/** Stable signature for a set of carved object ids, so the filtered index is only rebuilt when the set actually changes. */
+function carveSignature(ids: string[]): string {
+  return ids.slice().sort().join(',');
+}
+
+/** Returns a new index dropping triangles whose centroid falls inside any carve box (above its bottom face), or null if nothing was removed. */
+function carveGlobalMeshIndex(mesh: THREE.Mesh, boxes: CarveBox[]): THREE.BufferAttribute | null {
+  const geometry = mesh.geometry;
+  const position = geometry.getAttribute('position');
+  if (!position || boxes.length === 0) return null;
+  const index = geometry.getIndex();
+  const triCount = index ? index.count / 3 : position.count / 3;
+  const keep: number[] = [];
+  const v = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  mesh.updateMatrixWorld(true);
+  let removed = 0;
+  for (let t = 0; t < triCount; t++) {
+    const a = index ? index.getX(t * 3) : t * 3;
+    const b = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+    const d = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+    c.set(0, 0, 0);
+    for (const i of [a, b, d]) {
+      v.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
+      c.add(v);
+    }
+    c.multiplyScalar(1 / 3);
+    let inside = false;
+    for (const box of boxes) {
+      if (
+        c.x >= box.min.x && c.x <= box.max.x &&
+        c.z >= box.min.z && c.z <= box.max.z &&
+        c.y > box.min.y && c.y <= box.max.y
+      ) {
+        inside = true;
+        break;
+      }
+    }
+    if (inside) {
+      removed++;
+      continue;
+    }
+    keep.push(a, b, d);
+  }
+  if (removed === 0) return null;
+  return new THREE.BufferAttribute(new Uint32Array(keep), 1);
+}
 
 function regionForSurface(snapshot: SceneSnapshot, surfaceId: string): Region | undefined {
   for (const region of Object.values(snapshot.regions)) {
@@ -59,6 +136,14 @@ function pickBestFrame(frames: CameraFrame[], centre: Vec3, normal: Vec3): Camer
   return best;
 }
 
+interface GlobalMeshEntry {
+  mesh: THREE.Mesh;
+  /** Full, uncarved index as received from scene understanding. */
+  originalIndex: THREE.BufferAttribute;
+  /** Signature (see carveSignature) the currently-applied index was built from; '' means uncarved. */
+  appliedCarveSignature: string;
+}
+
 interface SurfaceEntry {
   mesh: THREE.Mesh;
   lastChanged: number;
@@ -75,8 +160,12 @@ export class ShellRenderer {
   readonly visibleGroup = new THREE.Group();
 
   private readonly surfaceEntries = new Map<string, SurfaceEntry>();
-  private readonly globalMeshEntries = new Map<string, THREE.Mesh>();
+  private readonly globalMeshEntries = new Map<string, GlobalMeshEntry>();
   private lastVersion = -1;
+  /** Recomputed only when `version` changes; the carved object id set drives both the global-mesh index cache and hiding an object's own surface tile. */
+  private carvedObjectIds = new Set<string>();
+  private carveBoxes: CarveBox[] = [];
+  private carveSignatureValue = '';
 
   constructor(private readonly frameStore?: FrameStore) {}
 
@@ -88,6 +177,15 @@ export class ShellRenderer {
     // allocating `Object.values(snapshot.regions)` per surface for no reason).
     if (snapshot.version !== this.lastVersion) {
       this.lastVersion = snapshot.version;
+      this.carvedObjectIds.clear();
+      this.carveBoxes = [];
+      for (const obj of Object.values(snapshot.objects)) {
+        if (!isCarved(obj)) continue;
+        this.carvedObjectIds.add(obj.id);
+        const box = carveBoxFor(obj);
+        if (box) this.carveBoxes.push(box);
+      }
+      this.carveSignatureValue = carveSignature(Array.from(this.carvedObjectIds));
       this.syncSurfaces(snapshot);
     }
     this.syncGlobalMeshes(globalMeshes, snapshot.mode);
@@ -157,11 +255,19 @@ export class ShellRenderer {
   }
 
   private placeSurface(surface: Surface, entry: SurfaceEntry, snapshot: SceneSnapshot): void {
-    const region = regionForSurface(snapshot, surface.id);
-    const visible = isVisibleShellState(region);
-
     this.occluderGroup.remove(entry.mesh);
     this.visibleGroup.remove(entry.mesh);
+
+    // A physical object's own shell tile (its "box" surface, keyed by the
+    // same id - see src/render/objects.ts's `entry.appearanceGroup` for the
+    // corresponding live-overlay treatment) must disappear while the object
+    // is hidden or moved: the background plate/hull already covers the
+    // exposed region behind/around it in both modes, so leaving this tile
+    // rendered would draw the object's old shell box right on top of that.
+    if (this.carvedObjectIds.has(surface.id)) return;
+
+    const region = regionForSurface(snapshot, surface.id);
+    const visible = isVisibleShellState(region);
 
     if (visible) {
       // CAPTURED/HYBRID: texture from the nearest room-shell viewpoint that
@@ -208,31 +314,48 @@ export class ShellRenderer {
 
   private syncGlobalMeshes(globalMeshes: RawGlobalMesh[], mode: SceneSnapshot['mode']): void {
     const seen = new Set<string>();
+    const signature = this.carveSignatureValue;
     for (const gm of globalMeshes) {
       seen.add(gm.id);
-      let mesh = this.globalMeshEntries.get(gm.id);
-      if (!mesh) {
+      let entry = this.globalMeshEntries.get(gm.id);
+      if (!entry) {
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(gm.vertices, 3));
-        geometry.setIndex(new THREE.BufferAttribute(gm.indices, 1));
+        const originalIndex = new THREE.BufferAttribute(gm.indices, 1);
+        geometry.setIndex(originalIndex);
         geometry.computeVertexNormals();
         const material = new THREE.MeshStandardMaterial({ color: 0x556677 });
-        mesh = new THREE.Mesh(geometry, material);
+        const mesh = new THREE.Mesh(geometry, material);
         mesh.renderOrder = 0;
-        this.globalMeshEntries.set(gm.id, mesh);
+        entry = { mesh, originalIndex, appliedCarveSignature: '' };
+        this.globalMeshEntries.set(gm.id, entry);
         this.occluderGroup.add(mesh);
       }
+      const mesh = entry.mesh;
       mesh.position.set(gm.pose.position.x, gm.pose.position.y, gm.pose.position.z);
       mesh.quaternion.set(gm.pose.rotation.x, gm.pose.rotation.y, gm.pose.rotation.z, gm.pose.rotation.w);
+
+      // Captured-shell carve: drop triangles belonging to a hidden/moved
+      // physical object's original footprint (expanded 3cm, never below its
+      // bottom face) so the global mesh doesn't keep drawing an object that
+      // is no longer really there (see STATE.md's former "Known
+      // limitations" entry on this). Rebuilt only when the carved-object set
+      // actually changes for this mesh, not every frame/version.
+      if (entry.appliedCarveSignature !== signature) {
+        entry.appliedCarveSignature = signature;
+        const filtered = this.carveBoxes.length > 0 ? carveGlobalMeshIndex(mesh, this.carveBoxes) : null;
+        mesh.geometry.setIndex(filtered ?? entry.originalIndex);
+      }
+
       const material = mesh.material as THREE.MeshStandardMaterial;
       // Global mesh is always occlusion/collision-only in live-overlay mode;
       // in captured-shell mode it can serve as the visible fallback shell
       // where no semantic plane exists yet.
       material.colorWrite = mode === 'captured-shell';
     }
-    for (const [id, mesh] of this.globalMeshEntries) {
+    for (const [id, entry] of this.globalMeshEntries) {
       if (!seen.has(id)) {
-        this.occluderGroup.remove(mesh);
+        this.occluderGroup.remove(entry.mesh);
         this.globalMeshEntries.delete(id);
       }
     }
