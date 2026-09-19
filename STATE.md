@@ -1,6 +1,6 @@
 # Reality Editor - Project State
 
-Last updated: 2026-09-19 (session 1, integration pass)
+Last updated: 2026-09-19 (session 1, feature pass 2)
 
 ## Decision log
 
@@ -39,6 +39,9 @@ Last updated: 2026-09-19 (session 1, integration pass)
 | Voice commands + hand menu | done, wired; deterministic grammar over the resolver |
 | Diagnostics panel, HTTPS dev, manifest | done (`npm run dev:https`, docs/device.md) |
 | Frame-loop allocation audit | done (docs/perf-audit.md, alloc e2e spec) |
+| Asset catalog (6 glTF models, voice/menu spawn, proxy refit on load) | done |
+| Compact HUD strip, selection label, palm menu, landing pages | done |
+| Photometric: frame store, plate fix, projective hull, textured shell | done (v1); hull v2 (depth mesh + stencil silhouette) in progress |
 | Device validation on Quest 3 | blocked: no headset |
 
 ## Feasibility gates (from canonical architecture) mapped to tests
@@ -97,6 +100,12 @@ Last updated: 2026-09-19 (session 1, integration pass)
 - Persistence debounce needs a max wait because previews commit every frame.
 - Deleting a spawned/imported object needs no background plate (it hides nothing real).
 - Proxy physics drops mid-air objects, so e2e test objects default to kinematic.
+- Physical-object proxies are world-aligned AABB half extents, so their pose rotation is identity;
+  applying the Quest volume's rotation misplaced the background hull.
+- Background plates and hulls must be unlit: they are photos with lighting baked in.
+- Projecting one clean-plate photo onto the object's box shows parallax error from other
+  viewpoints; the fix is reprojecting the frame's RGB-D as a depth mesh clipped to the object's
+  silhouette (stencil), which is what the capture doc predicted.
 
 ## Open questions / risks
 
