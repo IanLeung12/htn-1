@@ -97,7 +97,7 @@ function stereoMap(hole: { x0: number; y0: number; x1: number; y1: number } | nu
       weight[y * width + x] = inHole ? 0 : 1;
     }
   }
-  return { width, height, metric, weight, confidence: 0.6, source: 'stereo', pose: { position: { x: 0, y: 0.5, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } }, fovY, aspect: 1, timestamp: 1000 };
+  return { width, height, metric, weight, confidence: 0.6, source: 'stereo', pose: { position: { x: 0, y: 0.5, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } }, fovY, aspect: 1, timestamp: performance.now() };
 }
 
 const DESK: Surface = { id: 'desk', kind: 'table', orientation: 'horizontal', aabb: { min: { x: -2, y: 0, z: -4 }, max: { x: 2, y: 0, z: 0 } }, anchorId: 'room-anchor', lastChanged: 0 } as unknown as Surface;
