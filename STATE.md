@@ -128,6 +128,19 @@ Last updated: 2026-09-19 (session 1, feature pass 5)
   stereoEnabled=false for scripted demos.
 - The shell tile for a hidden object was never skipped (surface id vs object id mismatch).
 
+## General-camera workstream (2026-09-19, branch `worktree-agent-a44ecaa8a93687167`)
+
+Owner goal: run the editor on any camera, now specifically the ZED 2 on USB, with real depth.
+Verified on the real laptop camera and the ZED left eye: video passthrough, monocular depth
+(Depth Anything V2 on WebGPU, 180-300 ms), RANSAC planes in a worker, persistent surfaces, spawn
+onto surfaces with physics, depth-driven drag with clamps, discovery of real objects and moving
+them with a photo impostor, two-point metric calibration, tunables, diagnostics. Parallel
+branches in flight: `zed-stereo-depth` (GPU census matcher + rectification from the factory
+calibration public/zed/SN25491304.conf), `camera-edit-quality` (silhouette impostor, clean plate
+on camera, static-camera eraser for delete), `zed-imu` (WebHID IMU attitude), `zed-sdk-bridge`
+(ZED SDK depth + 6DoF tracking over a local WebSocket). Test snapshot served from
+`.claude/worktrees/camera-test` on port 5177 (Chrome camera permission bound to that origin).
+
 ## Suggested next steps
 
 1. Device validation on a Quest 3: feature report, depth texture format, hand confidence, anchor
