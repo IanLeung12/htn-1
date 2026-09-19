@@ -11,6 +11,9 @@ import * as THREE from 'three';
 
 export type Handedness = 'left' | 'right';
 
+/** Hoisted so the per-frame hand/controller loops don't allocate a tuple literal every call. */
+const HANDEDNESSES: readonly Handedness[] = ['left', 'right'];
+
 export interface RayPose {
   origin: THREE.Vector3;
   direction: THREE.Vector3;
@@ -39,6 +42,13 @@ export interface InputState {
 
 const PINCH_ON_DIST = 0.02;
 const PINCH_OFF_DIST = 0.028; // hysteresis: release threshold looser than engage threshold
+
+function hideVisualGroup(group: THREE.Group): void {
+  const children = group.children;
+  for (let i = 0; i < children.length; i++) {
+    children[i]!.visible = false;
+  }
+}
 
 function makeHandState(): HandState {
   return {
@@ -128,10 +138,10 @@ export class XRInput {
 
   /** Call once per rendered XR frame. */
   update(frame: XRFrame | undefined, refSpace: XRReferenceSpace | null): void {
-    (['left', 'right'] as const).forEach((handedness) => {
+    for (const handedness of HANDEDNESSES) {
       this.updateHand(handedness, frame, refSpace);
       this.updateController(handedness, frame);
-    });
+    }
   }
 
   private updateHand(handedness: Handedness, frame: XRFrame | undefined, refSpace: XRReferenceSpace | null): void {
@@ -145,7 +155,7 @@ export class XRInput {
       out.active = false;
       out.confidence = 0;
       out.source = 'none';
-      track.visualGroup.children.forEach((c) => (c.visible = false));
+      hideVisualGroup(track.visualGroup);
       return;
     }
 
@@ -155,7 +165,7 @@ export class XRInput {
       out.active = false;
       out.confidence = 0;
       out.source = 'none';
-      track.visualGroup.children.forEach((c) => (c.visible = false));
+      hideVisualGroup(track.visualGroup);
       return;
     }
 
@@ -166,7 +176,9 @@ export class XRInput {
     let thumbTip: XRJointPose | undefined;
     let wristPose: XRJointPose | undefined;
 
-    hand.forEach((jointSpace: XRJointSpace, jointName: string) => {
+    // for-of over the XRHand (a Map<XRHandJoint, XRJointSpace>) instead of
+    // .forEach(), which would allocate a fresh closure every hand every frame.
+    for (const [jointName, jointSpace] of hand as unknown as Map<string, XRJointSpace>) {
       total++;
       const pose = frame.getJointPose?.(jointSpace, refSpace);
       const mesh = track.visualGroup.children[idx];
@@ -187,7 +199,7 @@ export class XRInput {
       if (jointName === 'thumb-tip') thumbTip = pose;
       if (jointName === 'wrist') wristPose = pose;
       idx++;
-    });
+    }
 
     out.confidence = total > 0 ? reported / total : 0;
     out.active = out.confidence > 0;

@@ -43,18 +43,33 @@ interface PlateEntry {
 export class PlateRenderer {
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, PlateEntry>();
+  private lastVersion = -1;
+  /** Plates that belong to a moved object as of `lastVersion` - rebuilt only on a
+   * version change so the per-frame path (envelope visibility only, driven by
+   * head pose) never re-scans `snapshot.objects` or allocates a Set. */
+  private activePlates: BackgroundPlate[] = [];
 
   constructor(private readonly textures: PlateTextureRegistry) {}
 
   /** Call once per rendered frame. */
   update(snapshot: SceneSnapshot, headPose: Pose): void {
+    if (snapshot.version !== this.lastVersion) {
+      this.lastVersion = snapshot.version;
+      this.rebuildActivePlates(snapshot);
+    }
+    for (const plate of this.activePlates) {
+      this.syncPlate(plate, headPose);
+    }
+  }
+
+  private rebuildActivePlates(snapshot: SceneSnapshot): void {
     const seen = new Set<string>();
+    this.activePlates = [];
     for (const obj of Object.values(snapshot.objects)) {
-      const moved = this.hasMoved(obj);
-      if (!moved) continue;
+      if (!this.hasMoved(obj)) continue;
       for (const plate of obj.background) {
         seen.add(plate.id);
-        this.syncPlate(plate, headPose);
+        this.activePlates.push(plate);
       }
     }
     for (const [id, entry] of this.entries) {

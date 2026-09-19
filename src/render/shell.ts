@@ -48,11 +48,14 @@ export class ShellRenderer {
   private lastVersion = -1;
 
   update(snapshot: SceneSnapshot, globalMeshes: RawGlobalMesh[]): void {
+    // Regions live inside the snapshot (see core/types SceneSnapshot.regions), so
+    // any region-state transition already bumps `version` like every other
+    // committed intent; when the version is unchanged there is nothing new to
+    // place, so skip re-deriving visibility (previously this ran every frame,
+    // allocating `Object.values(snapshot.regions)` per surface for no reason).
     if (snapshot.version !== this.lastVersion) {
       this.lastVersion = snapshot.version;
       this.syncSurfaces(snapshot);
-    } else {
-      this.refreshVisibility(snapshot);
     }
     this.syncGlobalMeshes(globalMeshes, snapshot.mode);
   }
@@ -131,14 +134,6 @@ export class ShellRenderer {
       material.colorWrite = false;
       material.depthWrite = true;
       this.occluderGroup.add(entry.mesh);
-    }
-  }
-
-  private refreshVisibility(snapshot: SceneSnapshot): void {
-    for (const [id, entry] of this.surfaceEntries) {
-      const surface = snapshot.surfaces[id];
-      if (!surface) continue;
-      this.placeSurface(surface, entry, snapshot);
     }
   }
 

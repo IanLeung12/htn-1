@@ -78,11 +78,46 @@ function aabbOfLocalPoints(points: Iterable<Vec3>, pose: Pose, pad: Vec3) {
   };
 }
 
-/** Content signature for change detection (pose rounded to 1 mm / 1e-3 rad, geometry size). */
-function poseSignature(pose: Pose, size: number, _lastChanged: number): string {
+/**
+ * Content signature for change detection (pose to 1 mm / 1e-3 rad, geometry size).
+ *
+ * This runs for every detected plane/mesh on every single XR frame (the emulator -
+ * and some runtimes - bump `lastChangedTime` even when nothing moved, see the
+ * STATE.md integration note), so it is a numeric epsilon compare against a cached
+ * struct rather than building a template-literal key string per surface per frame
+ * (the previous approach: `toFixed(3)` × 7 + string concatenation, every frame,
+ * for every known surface, forever).
+ */
+const SIG_EPS = 0.0005; // matches toFixed(3) rounding granularity
+interface PoseSig {
+  px: number;
+  py: number;
+  pz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  rw: number;
+  size: number;
+}
+
+function poseSigChanged(cache: Map<string, PoseSig>, id: string, pose: Pose, size: number): boolean {
   const p = pose.position;
   const r = pose.rotation;
-  return `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)}|${r.x.toFixed(3)},${r.y.toFixed(3)},${r.z.toFixed(3)},${r.w.toFixed(3)}|${size}`;
+  const prev = cache.get(id);
+  const changed =
+    !prev ||
+    Math.abs(prev.px - p.x) >= SIG_EPS ||
+    Math.abs(prev.py - p.y) >= SIG_EPS ||
+    Math.abs(prev.pz - p.z) >= SIG_EPS ||
+    Math.abs(prev.rx - r.x) >= SIG_EPS ||
+    Math.abs(prev.ry - r.y) >= SIG_EPS ||
+    Math.abs(prev.rz - r.z) >= SIG_EPS ||
+    Math.abs(prev.rw - r.w) >= SIG_EPS ||
+    prev.size !== size;
+  if (changed) {
+    cache.set(id, { px: p.x, py: p.y, pz: p.z, rx: r.x, ry: r.y, rz: r.z, rw: r.w, size });
+  }
+  return changed;
 }
 
 function aabbCenter(aabb: { min: Vec3; max: Vec3 }): Vec3 {
@@ -117,8 +152,11 @@ export interface RawGlobalMesh {
 }
 
 export class SceneUnderstanding {
-  private readonly lastChanged = new Map<string, string>();
+  private readonly lastPoseSig = new Map<string, PoseSig>();
   private readonly volumeCache = new Map<string, DetectedVolume>();
+  /** Reused RawGlobalMesh records so an unchanged global mesh (the common case,
+   * once the room scan settles) doesn't allocate a fresh pose+record every frame. */
+  private readonly globalMeshCache = new Map<string, RawGlobalMesh>();
   private readonly planeIds = new WeakMap<XRPlane, string>();
   private readonly meshIds = new WeakMap<object, string>();
   private nextId = 0;
@@ -182,8 +220,7 @@ export class SceneUnderstanding {
     const pose = poseFromXRPose(xrPose);
     // Some runtimes (the emulator included) bump lastChangedTime every frame, so
     // change detection uses a content signature: pose + polygon vertex count.
-    const signature = poseSignature(pose, plane.polygon.length, plane.lastChangedTime);
-    if (this.lastChanged.get(id) === signature) {
+    if (!poseSigChanged(this.lastPoseSig, id, pose, plane.polygon.length)) {
       if (VOLUME_LABELS.has(plane.semanticLabel ?? '')) {
         const cached = this.volumeCache.get(id);
         if (cached) volumes.push(cached);
@@ -203,7 +240,6 @@ export class SceneUnderstanding {
       lastChanged: plane.lastChangedTime,
     };
 
-    this.lastChanged.set(id, signature);
     this.callbacks.registerSurface(surface);
 
     if (VOLUME_LABELS.has(plane.semanticLabel ?? '')) {
@@ -237,12 +273,19 @@ export class SceneUnderstanding {
 
     if (isGlobalMesh) {
       // Kept as raw collision/occlusion shell, never exposed as a core Surface.
-      globalMeshes.push({ id, pose, vertices: mesh.vertices, indices: mesh.indices });
+      // Reuse the cached record when the pose/vertex-count signature hasn't
+      // moved instead of allocating a new pose + record every frame.
+      const changed = poseSigChanged(this.lastPoseSig, id, pose, mesh.vertices.length);
+      let cached = this.globalMeshCache.get(id);
+      if (changed || !cached) {
+        cached = { id, pose, vertices: mesh.vertices, indices: mesh.indices };
+        this.globalMeshCache.set(id, cached);
+      }
+      globalMeshes.push(cached);
       return;
     }
 
-    const signature = poseSignature(pose, mesh.vertices.length, mesh.lastChangedTime);
-    if (this.lastChanged.get(id) === signature) {
+    if (!poseSigChanged(this.lastPoseSig, id, pose, mesh.vertices.length)) {
       const cached = this.volumeCache.get(id);
       if (cached) volumes.push(cached);
       return;
@@ -258,7 +301,6 @@ export class SceneUnderstanding {
       aabb: meshAabb(mesh.vertices, pose),
       lastChanged: mesh.lastChangedTime,
     };
-    this.lastChanged.set(id, signature);
     this.callbacks.registerSurface(surface);
 
     if (VOLUME_LABELS.has(mesh.semanticLabel ?? '')) {

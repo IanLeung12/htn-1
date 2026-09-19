@@ -71,10 +71,22 @@ export class DepthOcclusion {
       const mesh = this.renderer.xr.getDepthSensingMesh();
       if (mesh) {
         mesh.renderOrder = 1;
-        const material = mesh.material as THREE.Material | THREE.Material[];
-        for (const mat of Array.isArray(material) ? material : [material]) {
-          mat.depthFunc = THREE.LessDepth;
-          mat.colorWrite = false;
+        // Fullscreen quad drawn in clip space directly by three's occlusion
+        // shader (see WebXRDepthSensing.js) rather than via the object's
+        // transform, so its (identity, world-origin) bounding sphere is
+        // meaningless for culling - without this, walking a few metres from
+        // the origin (gate 2's walking loop) could get it frustum-culled and
+        // silently stop hand/person occlusion.
+        mesh.frustumCulled = false;
+        const material = mesh.material;
+        if (Array.isArray(material)) {
+          for (const mat of material) {
+            mat.depthFunc = THREE.LessDepth;
+            mat.colorWrite = false;
+          }
+        } else {
+          material.depthFunc = THREE.LessDepth;
+          material.colorWrite = false;
         }
       }
       return mesh;

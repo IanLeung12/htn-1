@@ -6,6 +6,7 @@
   "description": "Reality Editor: live mixed-reality room editor for Quest 3 (WebXR), with simulator and emulated device tests",
   "scripts": {
     "dev": "vite --host",
+    "dev:https": "vite --host --mode https",
     "build": "vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -24,6 +25,7 @@
     "@types/node": "^26.6.2",
     "@types/three": "^0.186.0",
     "@types/webxr": "^0.5.24",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@vitest/coverage-v8": "^5.0.1",
     "iwer": "^2.4.0",
     "typescript": "^5.9.0",

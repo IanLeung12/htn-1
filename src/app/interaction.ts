@@ -10,6 +10,9 @@ import type { Handedness, HandState, InputState } from '@/xr/input';
 
 const GRAB_SNAP_DIST = 0.05;
 
+/** Hoisted so the per-frame two-hand loop doesn't allocate a tuple + closure every call. */
+const HANDS: readonly Handedness[] = ['left', 'right'];
+
 export interface RejectionInfo {
   reason: string;
   explanation: string;
@@ -37,7 +40,9 @@ export class InteractionController {
 
   /** Call once per rendered frame. */
   update(input: InputState, conditions: RuntimeConditions): void {
-    (['left', 'right'] as const).forEach((hand) => this.updateHand(hand, input[hand], conditions));
+    for (const hand of HANDS) {
+      this.updateHand(hand, input[hand], conditions);
+    }
   }
 
   private updateHand(hand: Handedness, state: HandState, conditions: RuntimeConditions): void {
