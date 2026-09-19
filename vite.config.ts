@@ -20,6 +20,11 @@ export default defineConfig(async ({ mode }) => {
       dedupe: ['three'],
     },
     server: { port: 5177, strictPort: true },
+    // transformers.js ships its own onnxruntime-web bundles and worker-loaded
+    // wasm; pre-bundling breaks its dynamic imports. Used only by the camera
+    // backend's depth worker (src/camera/depth/worker.ts).
+    optimizeDeps: { exclude: ['@huggingface/transformers'] },
+    worker: { format: 'es' as const },
     build: {
       target: 'es2022',
       sourcemap: true,
@@ -27,6 +32,7 @@ export default defineConfig(async ({ mode }) => {
         input: {
           main: fileURLToPath(new URL('./index.html', import.meta.url)),
           sim: fileURLToPath(new URL('./sim.html', import.meta.url)),
+          camera: fileURLToPath(new URL('./camera.html', import.meta.url)),
         },
       },
     },

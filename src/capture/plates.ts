@@ -91,7 +91,8 @@ export function computeObservation(points: Vec3[], frames: CameraFrame[]): {
 
       if (frame.depth) {
         const sampled = sampleDepthNearest(frame.depth, frame.width, frame.height, proj.x, proj.y);
-        if (sampled === undefined || Math.abs(sampled - proj.depth) > DEPTH_TOLERANCE_M) return;
+        const tolerance = frame.depthToleranceM ?? DEPTH_TOLERANCE_M;
+        if (sampled === undefined || Math.abs(sampled - proj.depth) > tolerance) return;
       }
 
       observed[i] = true;
