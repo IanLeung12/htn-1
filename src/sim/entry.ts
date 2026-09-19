@@ -41,6 +41,7 @@ async function main(): Promise<void> {
   if (autoenter) {
     try {
       await handle.enterAR();
+      document.getElementById('sim-landing')?.classList.add('hidden');
     } catch (err) {
       console.error('[sim] enterAR() failed', err);
     }
