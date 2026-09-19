@@ -1,6 +1,6 @@
 # Reality Editor - Project State
 
-Last updated: 2026-09-19 (session 1, feature pass 2)
+Last updated: 2026-09-19 (session 1, feature pass 3)
 
 ## Decision log
 
@@ -41,7 +41,9 @@ Last updated: 2026-09-19 (session 1, feature pass 2)
 | Frame-loop allocation audit | done (docs/perf-audit.md, alloc e2e spec) |
 | Asset catalog (6 glTF models, voice/menu spawn, proxy refit on load) | done |
 | Compact HUD strip, selection label, palm menu, landing pages | done |
-| Photometric: frame store, plate fix, projective hull, textured shell | done (v1); hull v2 (depth mesh + stencil silhouette) in progress |
+| Photometric: frame store, plate fix, textured shell, hull v2 (stencil-clipped multi-frame depth meshes) | done; deleted table matches ground truth exactly from 0 and 45 degrees |
+| Persistent room anchor, anchor-relative persistence | done (device relocalization untested) |
+| Review fixes (tracking signal, watchdog, one snapshot per frame, session guards, grab rules) | done |
 | Device validation on Quest 3 | blocked: no headset |
 
 ## Feasibility gates (from canonical architecture) mapped to tests
@@ -106,6 +108,16 @@ Last updated: 2026-09-19 (session 1, feature pass 2)
 - Projecting one clean-plate photo onto the object's box shows parallax error from other
   viewpoints; the fix is reprojecting the frame's RGB-D as a depth mesh clipped to the object's
   silhouette (stencil), which is what the capture doc predicted.
+
+## Known limitations
+
+- Guided capture sweeps a 180 degree arc from the head bearing; head positions behind the
+  object can find per-pixel gaps in hull coverage and fall through to live passthrough. Widen
+  the arc or add a second pass when the envelope is enlarged.
+- Captured-shell mode still shows a deleted object's scan-mesh geometry (the global mesh has
+  no per-object triangle ownership); live-overlay mode is the truthful path today.
+- Emulator frame rate is software-GL bound (5 to 10 fps); app CPU per frame is under 1 ms.
+- Two agents running Playwright at once share port 5173; run suites serially.
 
 ## Open questions / risks
 

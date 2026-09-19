@@ -25,7 +25,7 @@ describe('hydrate validates object contents', () => {
     const store = createSceneStore();
     const good = makeObject({ id: 'ok' });
     const blob = JSON.stringify({
-      snapshot: { ...makeSnapshot({ objects: { ok: { ...good, tier: 'Z' } } }) },
+      snapshot: { ...makeSnapshot({ objects: { ok: { ...good, tier: 'Z' as unknown as typeof good.tier } } }) },
       undo: [],
       redo: [],
     });
