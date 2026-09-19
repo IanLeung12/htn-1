@@ -135,6 +135,8 @@ export interface CameraHandle {
   pickWorldDetailed(ndcX: number, ndcY: number): PickResult | null;
   /** Diagnostics for click-to-detect at an NDC position (no registration). */
   detectAt(ndcX: number, ndcY: number): unknown;
+  /** Visible meshes in the scene (name, world position, world size, renderOrder). */
+  debugScene(): unknown;
   /** Capture appearance + synthetic support plate for a discovered real object (tier D) so it can be moved. */
   prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }>;
   /**
@@ -1594,6 +1596,23 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     },
     ndcToVideoUv,
     debugEraserPositions: () => staticEraser.group.children.map((c) => ({ pos: c.position.clone(), visible: c.visible })),
+    debugScene: () => {
+      const out: { name: string; visible: boolean; pos: number[]; size: number[]; order: number }[] = [];
+      scene.updateMatrixWorld(true);
+      scene.traverse((obj) => {
+        const m = obj as THREE.Mesh;
+        if (!m.isMesh || !m.geometry) return;
+        let vis = true;
+        for (let o: THREE.Object3D | null = m; o; o = o.parent) if (!o.visible) vis = false;
+        if (!vis) return;
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        const bb = m.geometry.boundingBox!;
+        const size = new THREE.Vector3().subVectors(bb.max, bb.min).multiply(m.getWorldScale(new THREE.Vector3()));
+        const pos = m.getWorldPosition(new THREE.Vector3());
+        out.push({ name: m.name || m.type, visible: vis, pos: [pos.x, pos.y, pos.z].map((v) => +v.toFixed(2)), size: [size.x, size.y, size.z].map((v) => +v.toFixed(2)), order: m.renderOrder });
+      });
+      return out;
+    },
     worldAtPixel(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
       const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
