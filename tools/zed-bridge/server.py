@@ -229,7 +229,7 @@ class PlaybackSource:
 class ZedSource:
     """The real camera through pyzed. Depth mode falls back NEURAL -> ULTRA -> PERFORMANCE when the GPU cannot run it."""
 
-    def __init__(self, depth_mode: str, resolution: str = "HD720", fps: int = 30, floor_origin: bool = True, depth_min_m: float = DEPTH_MIN_M) -> None:
+    def __init__(self, depth_mode: str, resolution: str = "HD720", fps: int = 30, floor_origin: bool = True, depth_min_m: float = DEPTH_MIN_M, fill: bool = False) -> None:
         import pyzed.sl as sl  # imported lazily so --fake / --play work without the SDK
 
         self.sl = sl
@@ -279,6 +279,9 @@ class ZedSource:
         self.rt = sl.RuntimeParameters()
         self.rt.confidence_threshold = 100  # keep everything; the browser filters with the confidence map
         self.rt.texture_confidence_threshold = 100
+        # Fill mode: the SDK completes holes (shiny cans, matte black controllers) with lower
+        # confidence values; the browser's confidence cutoff decides how much of that to trust.
+        self.rt.enable_fill_mode = bool(fill)
         self.m_left = sl.Mat()
         self.m_depth = sl.Mat()
         self.m_conf = sl.Mat()
@@ -568,7 +571,7 @@ async def run(args: argparse.Namespace) -> int:
         source = PlaybackSource(args.play)
     else:
         try:
-            source = ZedSource(args.depth_mode, args.resolution, args.fps, floor_origin=not args.no_floor_origin, depth_min_m=args.depth_min)
+            source = ZedSource(args.depth_mode, args.resolution, args.fps, floor_origin=not args.no_floor_origin, depth_min_m=args.depth_min, fill=args.fill)
         except RuntimeError as exc:
             print(f"[zed-bridge] {exc}", file=sys.stderr, flush=True)
             return 2
@@ -609,6 +612,7 @@ def main() -> int:
     ap.add_argument("--depth-mode", default="NEURAL", choices=["NEURAL_PLUS", "NEURAL", "NEURAL_LIGHT", "ULTRA", "QUALITY", "PERFORMANCE"])
     ap.add_argument("--resolution", default="HD720", choices=["HD720", "HD1080", "VGA"])
     ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--fill", action="store_true", help="RuntimeParameters.enable_fill_mode: SDK fills depth holes (shiny/black objects) at lower confidence")
     ap.add_argument("--jpeg-width", type=int, default=DEFAULT_JPEG_WIDTH, help="passthrough width (640 or 1280)")
     ap.add_argument("--jpeg-quality", type=int, default=80)
     ap.add_argument("--depth-width", type=int, default=DEFAULT_DEPTH_WIDTH, help="depth/confidence grid width (320 or 640)")
