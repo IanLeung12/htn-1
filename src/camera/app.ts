@@ -51,8 +51,18 @@ import type { CameraAppConfig, DepthEstimator, FrameSource, PoseSource, SurfaceE
 import { DEFAULT_CAMERA_CONFIG } from './contract';
 import { createFrameSource } from './frame-source';
 import { createPoseSource } from './pose';
-import { FloorPriorSurfaceEstimator, rayPlaneY } from './surfaces/floor-prior';
+import { rayPlaneY } from './surfaces/floor-prior';
+import { DepthSurfaceEstimator } from './surfaces/depth-surfaces';
 import { PointerInputAdapter, intersectPlaneY, type PointerRay } from './input/pointer';
+import { StaticPoseSource } from './pose/static';
+import type { VisualPoseSource } from './pose/visual';
+import { ModelDepthEstimator } from './depth/model';
+import { TuningStore, type CameraTuning } from './tuning';
+import { TuningPanel } from './tuning-panel';
+import { synthesizeSupportPlate, tierForSyntheticPlate } from './synthetic-plate';
+import { footprintFromProxy } from '@/capture';
+import { unprojectPixel } from '@/capture/geom';
+import { surfaceBelow } from '@/core';
 import { CameraDiagnostics, type CameraDiagnosticsState } from './diagnostics';
 import { createDepthEstimator } from './depth';
 import { capTierForEstimatedDepth } from './tier-cap';
@@ -81,6 +91,14 @@ export interface CameraHandle {
   /** Change the camera height above the floor (metres). */
   setCameraHeight(h: number): void;
   setFovY(rad: number): void;
+  /** Renderer-side counts for tests/diagnostics (hull meshes drawn over the video, object views). */
+  renderStats(): { hullChildren: number; viewChildren: number };
+  /** Live tunables (persisted in localStorage; `t` toggles the slider panel). */
+  readonly tuning: TuningStore;
+  /** World point the estimated depth sees at a canvas NDC position (snapped onto the surface below); null without depth. */
+  pickWorld(ndcX: number, ndcY: number): Vec3 | null;
+  /** Capture appearance + synthetic support plate for a discovered real object (tier D) so it can be moved. */
+  prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }>;
 }
 
 export interface CameraApp {
@@ -98,6 +116,21 @@ const TARGET_FRAME_MS = 1000 / 60;
 /** Width of frames handed to the capture pipeline and the depth estimator. */
 const CAPTURE_WIDTH = 320;
 const DEPTH_SUBMIT_INTERVAL_MS = 150;
+const GRAB_INTERVAL_MS = 120;
+/** Farthest a spawned object is placed from the camera along the floor (m). */
+const SPAWN_MAX_M = 2.0;
+/** Clean-plate shots requested from a moving (non-static) camera; see tier-cap.ts's agreement rule. */
+const MULTI_SHOT_COUNT = 3;
+const MULTI_SHOT_BEARING_RAD = (16 * Math.PI) / 180;
+const MULTI_SHOT_TIMEOUT_MS = 8000;
+
+function bearingDelta(a: Pose, b: Pose): number {
+  const fa = quatRotateVec3(a.rotation, { x: 0, y: 0, z: -1 });
+  const fb = quatRotateVec3(b.rotation, { x: 0, y: 0, z: -1 });
+  let d = Math.abs(Math.atan2(fa.x, -fa.z) - Math.atan2(fb.x, -fb.z));
+  if (d > Math.PI) d = 2 * Math.PI - d;
+  return d;
+}
 
 function poseFromCamera(camera: THREE.Camera): Pose {
   const p = camera.position;
@@ -109,6 +142,17 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   const container = options.container ?? document.body;
   const headless = options.headless ?? false;
   const config: CameraAppConfig = { ...DEFAULT_CAMERA_CONFIG, ...options.config };
+
+  // Live tunables: persisted values win over defaults; values given explicitly in
+  // options.config (URL params) win over persisted ones.
+  const initialTuning: Partial<CameraTuning> = {};
+  if (options.config?.cameraHeightM !== undefined) initialTuning.cameraHeightM = options.config.cameraHeightM;
+  if (options.config?.pitchRad !== undefined) initialTuning.pitchDeg = (options.config.pitchRad * 180) / Math.PI;
+  if (options.config?.fovY !== undefined) initialTuning.fovYDeg = (options.config.fovY * 180) / Math.PI;
+  const tuning = new TuningStore({ storage: typeof localStorage !== 'undefined' ? localStorage : null, initial: initialTuning });
+  config.cameraHeightM = tuning.value.cameraHeightM;
+  config.pitchRad = (tuning.value.pitchDeg * Math.PI) / 180;
+  config.fovY = (tuning.value.fovYDeg * Math.PI) / 180;
 
   const store = createSceneStore();
   const perf = createPerfTracker();
@@ -130,8 +174,31 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // ---- Estimators -----------------------------------------------------
   const frameSource = createFrameSource(config);
   const poseSource = createPoseSource(config);
-  const surfaceEstimator = new FloorPriorSurfaceEstimator({ cameraHeightM: config.cameraHeightM });
+  // Floor prior until estimated depth is confident enough for RANSAC planes/volumes.
+  const surfaceEstimator = new DepthSurfaceEstimator({ cameraHeightM: config.cameraHeightM, getTuning: () => tuning.value });
   const depthEstimator = createDepthEstimator(config, () => surfaceEstimator.cameraHeightM);
+  const staticBase: StaticPoseSource | null = (() => {
+    const base = (poseSource as VisualPoseSource).base as unknown;
+    return base instanceof StaticPoseSource ? base : poseSource instanceof StaticPoseSource ? poseSource : null;
+  })();
+  const visualPose = 'pushFrame' in poseSource ? (poseSource as VisualPoseSource) : null;
+  const applyDepthAdjust = (): void => {
+    if (depthEstimator instanceof ModelDepthEstimator) {
+      depthEstimator.adjust.scale = tuning.value.depthScale;
+      depthEstimator.adjust.shiftM = tuning.value.depthShiftM;
+      depthEstimator.adjust.smoothing = tuning.value.depthSmoothing;
+    }
+  };
+  applyDepthAdjust();
+  tuning.subscribe((t, key) => {
+    if (key === null || key === 'cameraHeightM') {
+      poseSource.setHeight(t.cameraHeightM);
+      surfaceEstimator.setHeight(t.cameraHeightM);
+    }
+    if ((key === null || key === 'pitchDeg') && staticBase) staticBase.setPitch((t.pitchDeg * Math.PI) / 180);
+    if (key === null || key === 'fovYDeg') frameSource.setFovY((t.fovYDeg * Math.PI) / 180);
+    if (key === null || key === 'depthScale' || key === 'depthShiftM' || key === 'depthSmoothing') applyDepthAdjust();
+  });
 
   // ---- Renderer: video under a transparent canvas ---------------------
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
@@ -201,6 +268,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   let guide: CaptureGuide = INACTIVE_GUIDE;
   let lastFrameTime: number | null = null;
   let lastDepthSubmitAt = -Infinity;
+  let lastGrabAt = -Infinity;
+  let lastCorrectionAt = -Infinity;
+  let lastTuningSyncAt = -Infinity;
+  let lastSurfaceRegisterAt = -Infinity;
   let floorRegistered = false;
   const localizedAnchors = new Set<string>();
   const tierCapFrames = new Map<string, CameraFrame[]>();
@@ -361,8 +432,15 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     hoverId: null,
     pointerWorld: null,
     error: null,
+    estPitchDeg: null,
+    estRollDeg: null,
+    tables: 0,
+    walls: 0,
+    surfaceRunMs: 0,
+    motionPx: 0,
   };
   const diagnostics = new CameraDiagnostics(container, !headless);
+  const tuningPanel = new TuningPanel(container, tuning, { visible: false });
   let lastDiagAt = -Infinity;
   let videoFrameCounter = 0;
   let videoFpsWindowStart = 0;
@@ -385,17 +463,64 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     return { position: { x: target.x, y: target.y + 0.5, z: target.z + 0.7 }, rotation: { ...IDENTITY_QUAT } };
   }
 
+  /**
+   * Map overlay NDC to video UV, accounting for the object-fit: cover crop
+   * (the overlay camera's FOV was widened/cropped to match, see the frame loop).
+   */
+  function ndcToVideoUv(ndcX: number, ndcY: number): { u: number; v: number } {
+    const intr = frameSource.intrinsics;
+    const viewAspect = (container.clientWidth || window.innerWidth) / (container.clientHeight || window.innerHeight);
+    let u = ndcX * 0.5 + 0.5;
+    let v = 0.5 - ndcY * 0.5;
+    if (viewAspect > intr.aspect) {
+      // Viewport wider than the video: video scaled to the width, top/bottom cropped.
+      const frac = intr.aspect / viewAspect;
+      v = 0.5 + (v - 0.5) * frac;
+    } else if (viewAspect < intr.aspect) {
+      const frac = viewAspect / intr.aspect;
+      u = 0.5 + (u - 0.5) * frac;
+    }
+    return { u, v };
+  }
+
+  /** World point the newest estimated depth sees at an NDC position, snapped onto the surface below it. */
+  function pickWorld(ndcX: number, ndcY: number): Vec3 | null {
+    const map = depthEstimator.latest;
+    if (!map || map.confidence < 0.3 || map.source === 'plane-prior') return null;
+    if (performance.now() - map.timestamp > 3000) return null;
+    const { u, v } = ndcToVideoUv(ndcX, ndcY);
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    const px = Math.min(map.width - 1, Math.floor(u * map.width));
+    const py = Math.min(map.height - 1, Math.floor(v * map.height));
+    const d = map.metric[py * map.width + px] as number;
+    if (!(d > 0)) return null;
+    const point = unprojectPixel(px + 0.5, py + 0.5, d, map.pose, map.fovY, map.aspect, map.width, map.height);
+    const below = surfaceBelow(store.current, { x: point.x, y: point.y + 0.05, z: point.z });
+    if (below && point.y + 0.05 - below.aabb.max.y < 0.2) point.y = below.aabb.max.y;
+    return point;
+  }
+
   function spawnTarget(): Vec3 {
     const pw = pointer.pointerWorld;
-    if (pointer.state.right.active && pointer.hoverId === null && Math.abs(pw.y) < 0.01) {
-      return { x: pw.x, y: 0, z: pw.z };
+    if (pointer.state.right.active && pointer.hoverId === null) {
+      // Prefer what the depth sees under the pointer (a desk, a bed), else the ground plane.
+      const picked = pickWorld(pointer.lastNdcX, pointer.lastNdcY);
+      if (picked) return picked;
+      if (Math.abs(pw.y) < 0.01) return { x: pw.x, y: 0, z: pw.z };
     }
+    const centre = pickWorld(0, -0.2);
+    if (centre) return centre;
     const pose = poseSource.pose;
     const fwd = quatRotateVec3(pose.rotation, { x: 0, y: 0, z: -1 });
     const hit = rayPlaneY(pose.position, fwd, 0);
-    if (hit) return hit;
     const horiz = Math.hypot(fwd.x, fwd.z) || 1;
-    return { x: pose.position.x + (fwd.x / horiz) * 1.5, y: 0, z: pose.position.z + (fwd.z / horiz) * 1.5 };
+    // Where the camera's centre ray meets the floor, but no further than SPAWN_MAX_M ahead
+    // (a gently pitched webcam looks at the floor metres away, where a new object would be tiny).
+    if (hit) {
+      const dist = Math.hypot(hit.x - pose.position.x, hit.z - pose.position.z);
+      if (dist <= SPAWN_MAX_M) return hit;
+    }
+    return { x: pose.position.x + (fwd.x / horiz) * SPAWN_MAX_M, y: 0, z: pose.position.z + (fwd.z / horiz) * SPAWN_MAX_M };
   }
 
   views.onModelLoaded = (objectId, bounds) => {
@@ -493,17 +618,62 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     features = null;
   }
 
+  /**
+   * Discover real objects from the depth volumes and make them movable right
+   * away. Pressing Discover is the approval gesture on this backend (there is
+   * no per-object approval UI on a webcam page), so every candidate with a
+   * support surface is approved, its appearance is captured from the live
+   * frame, and a SYNTHETIC support plate (tier D: move/restore/undo, no
+   * delete) fills the footprint it will leave behind. Candidates already
+   * registered keep their state.
+   */
   async function runCandidateDiscovery(): Promise<string[]> {
     const candidates = capture.discover([...surfaceEstimator.volumes], store.current);
     const ids: string[] = [];
     for (const candidate of candidates) {
+      if (store.current.objects[candidate.object.id]) {
+        ids.push(candidate.object.id);
+        continue;
+      }
       const result = store.dispatch(
         { intent: { kind: 'registerObject', object: candidate.object }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
         conditions(),
       );
-      if (result.ok) ids.push(candidate.object.id);
+      if (!result.ok) continue;
+      ids.push(candidate.object.id);
+      if (candidate.object.supportSurfaces.length > 0) {
+        store.dispatch(
+          { intent: { kind: 'approve', objectId: candidate.object.id, approved: true }, source: 'ui', issuedAt: performance.now(), basedOnVersion: store.current.version },
+          conditions(),
+        );
+        await prepareRealObject(candidate.object.id);
+      }
     }
     return ids;
+  }
+
+  /** Appearance from the live frame + synthetic support plate so a discovered real object can be moved (tier D). */
+  async function prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }> {
+    const obj = store.current.objects[objectId];
+    if (!obj) return { tier: 'E', donorFraction: 0 };
+    await captureObjectAppearance(objectId);
+    const frame = await cameraFrameSource.capture(poseSource.pose);
+    if (!frame) return { tier: obj.tier, donorFraction: 0 };
+    const support = obj.supportSurfaces[0] ? store.current.surfaces[obj.supportSurfaces[0]] : undefined;
+    const half = obj.occlusionProxy.kind === 'box' ? obj.occlusionProxy.halfExtents : { x: 0.15, y: 0.15, z: 0.15 };
+    const region = footprintFromProxy(obj.currentPose.position, half, support);
+    const { plate, donorFraction } = synthesizeSupportPlate(obj, region, frame, { registry: textureRegistry });
+    if (plate.provenance === 'unavailable') return { tier: obj.tier, donorFraction };
+    store.dispatch(
+      { intent: { kind: 'updateBackground', objectId, plate }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+      conditions(),
+    );
+    const tier = tierForSyntheticPlate();
+    store.dispatch(
+      { intent: { kind: 'setTier', objectId, tier, confidence: Math.min(0.6, donorFraction) }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+      conditions(),
+    );
+    return { tier, donorFraction };
   }
 
   /**
@@ -518,10 +688,35 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     const obj = snapshot.objects[objectId];
     if (!obj) return { tier: 'E', coverage: 0 };
     const supportSurface = obj.supportSurfaces[0] ? snapshot.surfaces[obj.supportSurfaces[0]] : undefined;
-    const viewpoint = poseSource.pose;
-    guide = makeActiveGuide(obj, 1, 1, viewpoint);
+    // A static camera gets one shot. A moving one (orientation/visual pose) is asked for
+    // MULTI_SHOT_COUNT shots from bearings at least MULTI_SHOT_BEARING_RAD apart, which is
+    // what the multi-view agreement check in tier-cap.ts needs to lift the tier-B cap.
+    const shots = poseSource.quality.mode === 'static' ? 1 : MULTI_SHOT_COUNT;
+    const viewpoints: Pose[] = [];
+    guide = makeActiveGuide(obj, 1, shots, poseSource.pose);
+    let shotIndex = 0;
+    const shotSource: CameraFrameSource = {
+      get available() {
+        return cameraFrameSource.available;
+      },
+      async capture(): Promise<CameraFrame | null> {
+        shotIndex += 1;
+        if (shotIndex > 1) {
+          const previous = viewpoints[viewpoints.length - 1];
+          guide = { ...makeActiveGuide(obj, Math.min(shotIndex, shots), shots, poseSource.pose), hint: 'Move the camera to one side, keep the spot in view' };
+          const deadline = performance.now() + MULTI_SHOT_TIMEOUT_MS;
+          while (previous && bearingDelta(previous, poseSource.pose) < MULTI_SHOT_BEARING_RAD && performance.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+        viewpoints.push(poseSource.pose);
+        return cameraFrameSource.capture(poseSource.pose);
+      },
+    };
     try {
-      const acquired = await capture.acquireCleanPlate({ object: obj, supportSurface, viewpoints: [viewpoint] }, cameraFrameSource);
+      const plan: Pose[] = [];
+      for (let i = 0; i < shots; i++) plan.push(poseSource.pose);
+      const acquired = await capture.acquireCleanPlate({ object: obj, supportSurface, viewpoints: plan }, shotSource);
       const verified = await capture.verify(acquired, [], cameraFrameSource);
       const capped = capTierForEstimatedDepth(acquired.plate, verified, acquired.frames);
       tierCapFrames.set(objectId, acquired.frames);
@@ -565,14 +760,28 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     return { framesCaptured: frames.length };
   }
 
-  function registerEstimatedSurfaces(): void {
+  const registeredSurfaceSeenAt = new Map<string, number>();
+  const SURFACE_FORGET_MS = 3000;
+  function registerEstimatedSurfaces(now: number): void {
     for (const est of surfaceEstimator.surfaces) {
+      registeredSurfaceSeenAt.set(est.surface.id, now);
       const existing = store.current.surfaces[est.surface.id];
       if (existing && existing.lastChanged === est.surface.lastChanged) continue;
       store.dispatch(
         { intent: { kind: 'registerSurface', surface: est.surface }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
         conditions(),
       );
+    }
+    // RANSAC results flicker; only forget a surface after it has been missing for a while.
+    for (const [id, seenAt] of registeredSurfaceSeenAt) {
+      if (now - seenAt < SURFACE_FORGET_MS) continue;
+      registeredSurfaceSeenAt.delete(id);
+      if (store.current.surfaces[id]) {
+        store.dispatch(
+          { intent: { kind: 'removeSurface', surfaceId: id }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+          conditions(),
+        );
+      }
     }
     floorRegistered = true;
   }
@@ -608,16 +817,43 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     }
     camera.updateMatrixWorld(true);
 
-    // Surfaces (floor prior now; RANSAC later) -> store.
+    // Surfaces from depth (ground plane, tables at any height, walls, volumes) -> store.
     surfaceEstimator.update(depthEstimator.latest, pose, now);
-    if (!floorRegistered || surfaceEstimator.surfaces.some((s) => store.current.surfaces[s.surface.id]?.lastChanged !== s.surface.lastChanged)) {
-      registerEstimatedSurfaces();
+    const correction = surfaceEstimator.correction;
+    if (correction && correction.at !== lastCorrectionAt) {
+      lastCorrectionAt = correction.at;
+      diagState.estPitchDeg = (correction.pitchRad * 180) / Math.PI;
+      diagState.estRollDeg = (correction.rollRad * 180) / Math.PI;
+      // A static camera learns its attitude from the dominant plane (smoothed); sensors keep theirs.
+      if (staticBase && tuning.value.autoAttitude >= 1 && correction.confidence >= 0.3) {
+        const k = 0.35;
+        const pitch = staticBase.pitch + k * (correction.pitchRad - staticBase.pitch);
+        const roll = staticBase.roll + k * (correction.rollRad - staticBase.roll);
+        staticBase.setPitch(pitch);
+        staticBase.setRoll(Math.max(-0.5, Math.min(0.5, roll)));
+        const pitchDeg = (pitch * 180) / Math.PI;
+        if (Math.abs(pitchDeg - tuning.value.pitchDeg) > 0.5 && now - lastTuningSyncAt > 1000) {
+          lastTuningSyncAt = now;
+          tuning.set('pitchDeg', Math.round(pitchDeg * 10) / 10);
+        }
+      }
+    }
+    if (!floorRegistered || now - lastSurfaceRegisterAt > 250) {
+      lastSurfaceRegisterAt = now;
+      registerEstimatedSurfaces(now);
     }
 
-    // Depth: offer a downscaled frame off-loop, at most one in flight.
-    if (inSession && frameSource.ready && now - lastDepthSubmitAt > DEPTH_SUBMIT_INTERVAL_MS && depthEstimator.status.state === 'ready') {
+    // Grab a downscaled frame every GRAB_INTERVAL_MS for optical flow (motion / tracking loss)
+    // and, when the estimator is ready, for depth - at most one inference in flight, never awaited.
+    if (inSession && frameSource.ready && now - lastGrabAt > GRAB_INTERVAL_MS) {
+      lastGrabAt = now;
       const grabbed = frameSource.grab(CAPTURE_WIDTH);
-      if (grabbed && depthEstimator.submit(grabbed, pose, intr)) lastDepthSubmitAt = now;
+      if (grabbed) {
+        visualPose?.pushFrame(grabbed, intr, now);
+        if (depthEstimator.status.state === 'ready' && now - lastDepthSubmitAt > DEPTH_SUBMIT_INTERVAL_MS && depthEstimator.submit(grabbed, pose, intr)) {
+          lastDepthSubmitAt = now;
+        }
+      }
     }
 
     const cond = conditions();
@@ -671,6 +907,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.floorConfidence = surfaceEstimator.surfaces[0]?.confidence ?? 0;
       diagState.surfaceCount = Object.keys(frameSnapshot.surfaces).length;
       diagState.volumeCount = surfaceEstimator.volumes.length;
+      diagState.tables = surfaceEstimator.lastStats.tables;
+      diagState.walls = surfaceEstimator.lastStats.walls;
+      diagState.surfaceRunMs = surfaceEstimator.lastStats.runMs;
+      diagState.motionPx = visualPose?.motionPx ?? 0;
       diagState.tierCap = depthEstimator.latest?.source === 'monocular' ? 'B' : 'C';
       diagState.qualityTier = quality.decision.tier;
       diagState.frameP95 = perf.stats('frameMs').p95;
@@ -766,6 +1006,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       guideOverlay.dispose();
       domHud.dispose();
       diagnostics.dispose();
+      tuningPanel.dispose();
       disposeRenderer();
       video.remove();
       if (window.__realityEditor === handle) delete window.__realityEditor;
@@ -783,8 +1024,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     diagnostics: diagState,
     worldAtPixel(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
+      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1);
+      const picked = pickWorld(ndcX, ndcY);
+      if (picked) return picked;
       const ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
-      rayFromNdc(((clientX - rect.left) / rect.width) * 2 - 1, -(((clientY - rect.top) / rect.height) * 2 - 1), ray);
+      rayFromNdc(ndcX, ndcY, ray);
       return intersectPlaneY(ray, 0) ?? { x: ray.origin.x + ray.direction.x * 2.5, y: ray.origin.y + ray.direction.y * 2.5, z: ray.origin.z + ray.direction.z * 2.5 };
     },
     setCameraHeight(h) {
@@ -795,6 +1040,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     setFovY(rad) {
       frameSource.setFovY(rad);
     },
+    renderStats() {
+      return { hullChildren: backgroundHull.group.children.length, viewChildren: views.group.children.length };
+    },
+    tuning,
+    pickWorld,
+    prepareRealObject,
   };
 
   window.__realityEditor = handle;

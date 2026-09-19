@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   const pose = params.get('pose');
   if (pose === 'auto' || pose === 'static' || pose === 'orientation') config.pose = pose;
   const depth = params.get('depth');
-  if (depth === 'auto' || depth === 'model' || depth === 'prior' || depth === 'none') config.depth = depth;
+  if (depth === 'auto' || depth === 'model' || depth === 'prior' || depth === 'none' || depth === 'injected') config.depth = depth;
   const facing = params.get('facing');
   if (facing === 'environment' || facing === 'user') config.facing = facing;
   if (params.has('height')) config.cameraHeightM = num(params.get('height'), 1.1);
@@ -51,8 +51,13 @@ async function main(): Promise<void> {
   const startButton = document.getElementById('start-camera') as HTMLButtonElement | null;
   const status = document.getElementById('landing-status');
   if (headless || autoStart) {
-    landing?.classList.add('hidden');
-    return;
+    if (app.handle.inSession || headless) {
+      landing?.classList.add('hidden');
+      return;
+    }
+    // Auto-start failed (no camera, permission denied, insecure context): keep the card
+    // with the reason instead of a silent black page; the button below retries.
+    if (status) status.textContent = app.camera.diagnostics.error ?? 'camera did not start';
   }
   if (startButton) {
     startButton.disabled = false;

@@ -184,10 +184,18 @@ export interface CameraAppConfig {
   pitchRad: number;
   /** Vertical field of view in radians. */
   fovY: number;
-  /** Pose source selection; 'auto' picks orientation on devices that report it, else static. */
-  pose: 'auto' | 'static' | 'orientation';
-  /** Depth estimator selection; 'auto' loads the model and falls back to the plane prior. */
-  depth: 'auto' | 'model' | 'prior' | 'none';
+  /**
+   * Pose source selection; 'auto' picks orientation on devices that report
+   * it, else static. 'visual' additionally integrates a sparse
+   * optical-flow rotation estimate onto whichever of those two the device
+   * would otherwise get (see src/camera/pose/visual.ts). Every mode is
+   * wrapped in a `VisualPoseSource` regardless (see createPoseSource); only
+   * 'visual' turns on rotation integration, the rest use it purely to
+   * detect motion the base source didn't report.
+   */
+  pose: 'auto' | 'static' | 'orientation' | 'visual';
+  /** Depth estimator selection; 'auto' loads the model and falls back to the plane prior; 'injected' is a test seam. */
+  depth: 'auto' | 'model' | 'prior' | 'none' | 'injected';
   /** Requested facing mode for getUserMedia. */
   facing: 'environment' | 'user';
 }

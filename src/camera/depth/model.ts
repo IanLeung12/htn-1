@@ -48,6 +48,8 @@ export class ModelDepthEstimator implements DepthEstimator {
   private readonly device: 'webgpu' | 'wasm' | 'auto';
   private readonly floorY: () => number;
   private floorScratch: Float32Array | null = null;
+  /** Live adjustments (src/camera/tuning.ts): metric = fitted * scale + shift, then EMA-smoothed against the previous map. */
+  adjust = { scale: 1, shiftM: 0, smoothing: 0 };
 
   constructor(opts: ModelDepthOptions) {
     this.fallback = opts.fallback;
@@ -143,6 +145,18 @@ export class ModelDepthEstimator implements DepthEstimator {
     this.status.error = null;
     const metric = new Float32Array(width * height);
     inverseToMetric(inverse, fit, metric);
+    const { scale, shiftM, smoothing } = this.adjust;
+    const prev = this.map && this.map.width === width && this.map.height === height ? this.map.metric : null;
+    const keep = prev && smoothing > 0 ? Math.min(0.95, smoothing) : 0;
+    for (let i = 0; i < metric.length; i++) {
+      let m = metric[i] as number;
+      if (m > 0) m = m * scale + shiftM;
+      if (keep > 0) {
+        const p = prev![i] as number;
+        if (p > 0 && m > 0) m = m * (1 - keep) + p * keep;
+      }
+      metric[i] = m > 0 ? m : 0;
+    }
     let sum = 0;
     for (let i = 0; i < inverse.length; i++) sum += inverse[i] as number;
     const confidence = fitConfidence(fit, sum / inverse.length);

@@ -89,9 +89,12 @@ const Y4M_PATH = ensureSyntheticY4m(path.resolve('test-results', 'fake-camera'))
 export interface CameraFixtures {
   camPage: Page;
   evalCam: Page['evaluate'];
+  /** Extra query params for camera.html (per spec via `test.use({ cameraParams: {...} })`). */
+  cameraParams: Record<string, string>;
 }
 
 export const test = base.extend<CameraFixtures>({
+  cameraParams: [{}, { option: true }],
   launchOptions: async ({ launchOptions }, use) => {
     await use({
       ...launchOptions,
@@ -104,7 +107,7 @@ export const test = base.extend<CameraFixtures>({
       ],
     });
   },
-  camPage: async ({ page }, use, testInfo) => {
+  camPage: async ({ page, cameraParams }, use, testInfo) => {
     const pageErrors: string[] = [];
     page.on('console', (msg) => {
       if (msg.type() === 'error') pageErrors.push(`console.error: ${msg.text()}`);
@@ -113,7 +116,7 @@ export const test = base.extend<CameraFixtures>({
       pageErrors.push(`pageerror: ${err.message}\n${err.stack ?? ''}`);
     });
 
-    await page.goto(cameraUrl());
+    await page.goto(cameraUrl(cameraParams));
     await page.waitForFunction(() => Boolean(window.__realityEditor && window.__camera), { timeout: 30_000 });
     await page.evaluate(installHelpers);
     await use(page);

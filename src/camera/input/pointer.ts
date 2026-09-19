@@ -118,6 +118,9 @@ export class PointerInputAdapter {
   hoverId: string | null = null;
   /** Wheel-driven lift applied to the drag plane (m). */
   liftM = 0;
+  /** NDC of the primary pointer on the last update (0,0 before any event). */
+  lastNdcX = 0;
+  lastNdcY = 0;
 
   private readonly element: HTMLElement;
   private readonly store: SceneStore;
@@ -321,6 +324,8 @@ export class PointerInputAdapter {
     if (primary) {
       this.pointerWorld.set(point.x, point.y, point.z);
       this.hoverId = hitId;
+      this.lastNdcX = track.ndcX;
+      this.lastNdcY = track.ndcY;
     }
   }
 

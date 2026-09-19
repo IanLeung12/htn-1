@@ -17,12 +17,13 @@ export interface StaticPoseSourceOptions {
   yawRad?: number;
 }
 
-function computePose(heightM: number, pitchRad: number, yawRad: number): Pose {
+function computePose(heightM: number, pitchRad: number, yawRad: number, rollRad = 0): Pose {
   const yawQuat = quatFromAxisAngle({ x: 0, y: 1, z: 0 }, yawRad);
   const pitchQuat = quatFromAxisAngle({ x: 1, y: 0, z: 0 }, pitchRad);
+  const rollQuat = quatFromAxisAngle({ x: 0, y: 0, z: 1 }, rollRad);
   return {
     position: { x: 0, y: heightM, z: 0 },
-    rotation: quatNormalize(quatMultiply(yawQuat, pitchQuat)),
+    rotation: quatNormalize(quatMultiply(yawQuat, quatMultiply(pitchQuat, rollQuat))),
   };
 }
 
@@ -35,6 +36,7 @@ export class StaticPoseSource implements PoseSource {
   private heightM: number;
   private pitchRad: number;
   private yawRad: number;
+  private rollRad = 0;
 
   pose: Pose;
   readonly quality: PoseQuality = {
@@ -49,25 +51,40 @@ export class StaticPoseSource implements PoseSource {
     this.heightM = opts.cameraHeightM;
     this.pitchRad = opts.pitchRad;
     this.yawRad = opts.yawRad ?? 0;
-    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad);
+    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad, this.rollRad);
   }
 
   setHeight(h: number): void {
     if (h === this.heightM) return;
     this.heightM = h;
-    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad);
+    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad, this.rollRad);
   }
 
   setPitch(rad: number): void {
     if (rad === this.pitchRad) return;
     this.pitchRad = rad;
-    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad);
+    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad, this.rollRad);
   }
 
   setYaw(rad: number): void {
     if (rad === this.yawRad) return;
     this.yawRad = rad;
-    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad);
+    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad, this.rollRad);
+  }
+
+  /** Roll about the camera's forward axis (estimated from the dominant depth plane). */
+  setRoll(rad: number): void {
+    if (rad === this.rollRad) return;
+    this.rollRad = rad;
+    this.pose = computePose(this.heightM, this.pitchRad, this.yawRad, this.rollRad);
+  }
+
+  get pitch(): number {
+    return this.pitchRad;
+  }
+
+  get roll(): number {
+    return this.rollRad;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars

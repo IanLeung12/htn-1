@@ -175,7 +175,7 @@ export class MediaStreamFrameSource extends BaseVideoFrameSource implements Fram
     }
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
-        facingMode: this.facing,
+        facingMode: { ideal: this.facing },
         width: { ideal: this.idealWidth },
         height: { ideal: this.idealHeight },
       },

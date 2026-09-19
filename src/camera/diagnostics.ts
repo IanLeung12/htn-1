@@ -35,6 +35,15 @@ export interface CameraDiagnosticsState {
   hoverId: string | null;
   pointerWorld: Vec3 | null;
   error: string | null;
+  /** Camera attitude estimated from the dominant depth plane (deg), null until found. */
+  estPitchDeg: number | null;
+  estRollDeg: number | null;
+  /** Surface estimator run stats. */
+  tables: number;
+  walls: number;
+  surfaceRunMs: number;
+  /** Median optical-flow magnitude between grabbed frames (px). */
+  motionPx: number;
 }
 
 function fmtMs(v: number): string {
@@ -89,13 +98,14 @@ export class CameraDiagnostics {
       `frame    h ${s.cameraHeightM.toFixed(2)} m  fovY ${s.fovYDeg.toFixed(0)} deg`,
       `depth    ${s.depthState} ${s.depthBackend}${s.depthModel ? ` ${s.depthModel.split('/').pop()}` : ''}`,
       `         infer ${fmtMs(s.depthInferenceMs)} age ${fmtMs(s.depthAgeMs)} conf ${s.depthConfidence.toFixed(2)}`,
-      `floor    conf ${s.floorConfidence.toFixed(2)}  surfaces ${s.surfaceCount}  volumes ${s.volumeCount}`,
+      `ground   conf ${s.floorConfidence.toFixed(2)}  est pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}`,
+      `scene    surfaces ${s.surfaceCount} (tables ${s.tables}, walls ${s.walls})  volumes ${s.volumeCount}  ransac ${s.surfaceRunMs.toFixed(0)} ms  motion ${s.motionPx.toFixed(1)} px`,
       `tier cap ${s.tierCap} (estimated depth)  quality tier ${s.qualityTier}`,
       `loop     p95 ${s.frameP95.toFixed(1)} ms  app ${s.appMs.toFixed(2)} ms  objects ${s.objectCount}`,
       `pointer  ${s.hoverId ?? '-'}${s.pointerWorld ? ` @ ${s.pointerWorld.x.toFixed(2)},${s.pointerWorld.y.toFixed(2)},${s.pointerWorld.z.toFixed(2)}` : ''}`,
     ];
     if (s.error) lines.push(`error    ${s.error}`);
-    lines.push('press d to hide');
+    lines.push('d: hide diagnostics   t: tuning panel');
     this.pre.textContent = lines.join('\n');
   }
 

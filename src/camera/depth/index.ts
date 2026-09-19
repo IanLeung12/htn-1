@@ -11,9 +11,11 @@
 import type { CameraAppConfig, DepthEstimator } from '../contract';
 import { NoDepthEstimator, PlanePriorDepthEstimator } from './prior';
 import { ModelDepthEstimator } from './model';
+import { InjectableDepthEstimator } from './injected';
 
 export { NoDepthEstimator, PlanePriorDepthEstimator, fillFloorDepth, toleranceForEstimatedDepth, PLANE_PRIOR_CONFIDENCE } from './prior';
 export { ModelDepthEstimator } from './model';
+export { InjectableDepthEstimator } from './injected';
 
 export function createDepthEstimator(config: Pick<CameraAppConfig, 'depth'>, _cameraHeight: () => number): DepthEstimator {
   switch (config.depth) {
@@ -21,6 +23,8 @@ export function createDepthEstimator(config: Pick<CameraAppConfig, 'depth'>, _ca
       return new NoDepthEstimator();
     case 'prior':
       return new PlanePriorDepthEstimator();
+    case 'injected':
+      return new InjectableDepthEstimator();
     case 'model':
       return new ModelDepthEstimator({ fallback: null });
     case 'auto':
