@@ -193,6 +193,9 @@ export class ShellRenderer {
       for (const obj of Object.values(snapshot.objects)) {
         if (!isCarved(obj)) continue;
         this.carvedObjectIds.add(obj.id);
+        // Discovery names objects `obj:<surfaceId>`; the object's own shell tile is
+        // keyed by the bare surface id, so register both spellings.
+        this.carvedObjectIds.add(obj.id.replace(/^obj:/, ''));
         const box = carveBoxFor(obj);
         if (box) this.carveBoxes.push(box);
       }
