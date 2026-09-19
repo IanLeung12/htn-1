@@ -17,6 +17,8 @@ export interface CameraDiagnosticsState {
   trackingOk: boolean;
   poseSampleAgeMs: number;
   cameraHeightM: number;
+  /** tuning.cameraHeightM: the ground-plane scale anchor for the depth fit (not the rendered pose height). */
+  tuningHeightM: number;
   fovYDeg: number;
   depthState: DepthStatus['state'];
   depthBackend: DepthBackend;
@@ -112,7 +114,7 @@ export class CameraDiagnostics {
     const lines = [
       `camera   ${s.source} ${s.videoReady ? s.videoSize : 'starting'} ${s.videoReady ? `${s.videoFps.toFixed(0)} fps` : ''}`,
       `pose     ${s.poseMode} conf ${s.poseConfidence.toFixed(2)} ${s.trackingOk ? 'tracking' : 'LOST'} age ${fmtMs(s.poseSampleAgeMs)}`,
-      `frame    h ${s.cameraHeightM.toFixed(2)} m  fovY ${s.fovYDeg.toFixed(0)} deg`,
+      `frame    h tuning ${s.tuningHeightM.toFixed(2)} (scale anchor) / fitted ${s.cameraHeightM.toFixed(2)} m (pose)  fovY ${s.fovYDeg.toFixed(0)} deg`,
       `depth    ${s.depthState} ${s.depthBackend}${s.depthModel ? ` ${s.depthModel.split('/').pop()}` : ''}`,
       `         infer ${fmtMs(s.depthInferenceMs)} age ${fmtMs(s.depthAgeMs)} conf ${s.depthConfidence.toFixed(2)}`,
       `         frames ${s.depthFrames} published ${fmtMs(s.depthPublishedAgoMs)} ago  scale ${s.depthFitMode} x${s.depthScale.toFixed(2)}`,

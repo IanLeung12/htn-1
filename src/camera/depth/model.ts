@@ -12,7 +12,7 @@ import type { Pose } from '@/core/types';
 import { quatRotateVec3 } from '@/core/math';
 import type { CameraIntrinsics, DepthEstimator, DepthMap, DepthSample, DepthStatus, GrabbedFrame } from '../contract';
 import { fillFloorDepth, toleranceForEstimatedDepth } from './prior';
-import { fitConfidence, fitInverseDepthBand, fitInverseDepthToFloor, inverseToMetric, resampleDepth, type InverseDepthFit } from './fit';
+import { fitConfidence, fitInverseDepthBand, fitInverseDepthToAnchors, fitInverseDepthToFloor, inverseToMetric, resampleDepth, type DepthAnchor, type InverseDepthFit } from './fit';
 
 export const DEFAULT_DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small';
 /** Longest side handed to the model (multiple of the 14 px ViT patch after the processor's own resize). */
@@ -52,6 +52,10 @@ export class ModelDepthEstimator implements DepthEstimator {
   private lastFitConfidence = 0;
   /** Live adjustments (src/camera/tuning.ts): metric = fitted * scale + shift, then EMA-smoothed against the previous map. */
   adjust = { scale: 1, shiftM: 0, smoothing: 0 };
+  /** Two-point metric anchors (near, far); when both are set they replace the ground-plane fit. */
+  anchors: { near: DepthAnchor | null; far: DepthAnchor | null } = { near: null, far: null };
+  /** Newest raw model output (relative inverse depth) for anchor sampling / diagnostics. */
+  lastInverse: { data: Float32Array; width: number; height: number } | null = null;
 
   constructor(opts: ModelDepthOptions) {
     this.fallback = opts.fallback;
@@ -141,16 +145,29 @@ export class ModelDepthEstimator implements DepthEstimator {
     // Metric scale: never stop publishing. Anchor on the ground plane when it is in view;
     // otherwise keep the previous map's scale (temporal fit), then the last good fit, then
     // a bottom-band anchor. Each step lowers the confidence the map is tagged with.
-    let fit: InverseDepthFit | null = hits > 0 ? fitInverseDepthToFloor(inverse, floor) : null;
+    this.lastInverse = { data: inverse, width, height };
+    let fit: InverseDepthFit | null = null;
     let mode = 'floor';
     let confidence = 0;
     let sumInv = 0;
     for (let i = 0; i < inverse.length; i++) sumInv += inverse[i] as number;
     const meanInverse = sumInv / Math.max(1, inverse.length);
-    if (fit) {
+    if (this.anchors.near && this.anchors.far) {
+      fit = fitInverseDepthToAnchors(inverse, width, height, this.anchors.near, this.anchors.far);
+      if (fit) {
+        mode = 'anchors';
+        confidence = 0.85;
+        this.status.error = null;
+      }
+    }
+    if (!fit && hits > 0) {
+      fit = fitInverseDepthToFloor(inverse, floor);
+      mode = 'floor';
+    }
+    if (fit && mode === 'floor') {
       confidence = fitConfidence(fit, meanInverse);
       this.status.error = null;
-    } else {
+    } else if (!fit) {
       const prev = this.map && this.map.width === width && this.map.height === height ? this.map : null;
       if (prev) {
         fit = fitInverseDepthToFloor(inverse, prev.metric, { stride: 2 });

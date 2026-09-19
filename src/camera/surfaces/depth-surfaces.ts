@@ -31,7 +31,7 @@ import { aabbIntersects, distance, quatFromAxisAngle, quatMultiply, quatRotateVe
 import type { DepthMap, EstimatedSurface, SurfaceEstimator } from '@/camera/contract';
 import type { DetectedVolume } from '@/capture/contract';
 import { makeFloorSurface } from './floor-prior';
-import { clusterAbovePlane, depthToPoints, extractPlanes, mergeHorizontalPlanes, ransacPlane, type PlaneFit } from './ransac';
+import { clusterAbovePlane, depthToPointsWithRows, extractPlanes, mergeHorizontalPlanes, ransacPlane, type PlaneFit } from './ransac';
 
 /** The subset of camera tuning this estimator consumes (see src/camera/tuning.ts). */
 export interface SurfaceTuning {
@@ -103,6 +103,9 @@ export interface FrameCorrection {
 
 const FLOOR_MIN_INLIER_FRACTION = 0.1;
 const ROLL_CLAMP_RAD = (5 * Math.PI) / 180;
+/** Lowest fraction of image rows the ground plane is fitted in first. */
+const GROUND_BAND_FRACTION = 0.35;
+const GROUND_THRESHOLD_M = 0.025;
 /** A volume's lowest seen point must be within this of its support plane. */
 const VOLUME_MAX_SUPPORT_GAP_M = 0.15;
 /** Monocular depth beyond this is too uncertain to fit planes on. */
@@ -277,10 +280,36 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
 
     // 1. Camera-space cloud and the dominant support plane.
     const localMap: DepthMap = { ...depth, pose: { position: { x: 0, y: 0, z: 0 }, rotation: { ...IDENTITY_QUAT } } };
-    const points = depthToPoints(localMap, stride, MAX_POINT_DEPTH_M);
+    const cloud = depthToPointsWithRows(localMap, stride, MAX_POINT_DEPTH_M);
+    const points = cloud.points;
     const pointCount = Math.floor(points.length / 3);
     const ransacOpts = { thresholdM: tuning.ransacThresholdM, iterations: tuning.ransacIterations, minInliers: Math.max(20, Math.floor(tuning.planeMinInliers / 2)), seed: 7 };
-    const dominant = ransacPlane(points, { ...ransacOpts, normalHint: { x: 0, y: 1, z: 0 }, maxNormalAngleRad: this.maxTiltRad });
+    // Ground = the plane that explains the BOTTOM of the frame (the desk edge under a laptop
+    // camera), not the largest plane in view (the bed behind it). Fit first among points from
+    // the lowest GROUND_BAND_FRACTION of image rows with a tight threshold; fall back to the
+    // largest camera-up-facing plane when that band has too few points.
+    const bandMask = new Uint8Array(pointCount);
+    let bandPoints = 0;
+    const bandTopRow = depth.height * (1 - GROUND_BAND_FRACTION);
+    for (let i = 0; i < pointCount; i++) {
+      if ((cloud.rows[i] as number) >= bandTopRow) {
+        bandMask[i] = 1;
+        bandPoints += 1;
+      }
+    }
+    const groundThreshold = Math.min(ransacOpts.thresholdM, GROUND_THRESHOLD_M);
+    let dominant: PlaneFit | null = null;
+    if (bandPoints >= ransacOpts.minInliers) {
+      const bandFit = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, normalHint: { x: 0, y: 1, z: 0 }, maxNormalAngleRad: this.maxTiltRad, candidateMask: bandMask });
+      if (bandFit) {
+        // Recount inliers over ALL points so the fit's extent/confidence reflect the whole plane.
+        dominant = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, iterations: 1, normalHint: bandFit.normal, maxNormalAngleRad: 0.02, seed: 3 }) ?? bandFit;
+        if (Math.abs(dominant.d - bandFit.d) > 0.05) dominant = bandFit;
+      }
+    }
+    if (!dominant) {
+      dominant = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, normalHint: { x: 0, y: 1, z: 0 }, maxNormalAngleRad: this.maxTiltRad });
+    }
 
     let floorInliers = 0;
     let floorChanged = false;

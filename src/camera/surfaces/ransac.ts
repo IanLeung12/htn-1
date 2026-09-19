@@ -18,8 +18,14 @@ import { unprojectPixel } from '@/capture/geom';
  * pixel (`depth > 0`, `<= maxDepthM`) on a `stride` pixel grid of `depth`.
  */
 export function depthToPoints(depth: DepthMap, stride: number, maxDepthM = 8): Float32Array {
+  return depthToPointsWithRows(depth, stride, maxDepthM).points;
+}
+
+/** Like depthToPoints, also returning each point's image row (0 = top) so callers can select bands. */
+export function depthToPointsWithRows(depth: DepthMap, stride: number, maxDepthM = 8): { points: Float32Array; rows: Uint16Array } {
   const { width, height, metric, pose, fovY, aspect } = depth;
   const out: number[] = [];
+  const rows: number[] = [];
   const step = Math.max(1, Math.floor(stride));
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
@@ -27,9 +33,10 @@ export function depthToPoints(depth: DepthMap, stride: number, maxDepthM = 8): F
       if (d === undefined || !(d > 0) || d > maxDepthM) continue;
       const p = unprojectPixel(x + 0.5, y + 0.5, d, pose, fovY, aspect, width, height);
       out.push(p.x, p.y, p.z);
+      rows.push(y);
     }
   }
-  return Float32Array.from(out);
+  return { points: Float32Array.from(out), rows: Uint16Array.from(rows) };
 }
 
 function pointAt(points: Float32Array, i: number): Vec3 {
@@ -444,6 +451,11 @@ function findPlanesWithHint(
     for (const idx of fit.inliers) mask[idx] = 0;
   }
   return results;
+}
+
+/** Repeated hinted RANSAC with a caller-chosen cone (camera-space ground candidates), largest first. */
+export function findHorizontalPlanesHinted(points: Float32Array, opts: FindPlanesOptions & { maxNormalAngleRad: number }): PlaneFit[] {
+  return findPlanesWithHint(points, { x: 0, y: 1, z: 0 }, opts.maxNormalAngleRad, opts);
 }
 
 /** Repeated RANSAC for near-horizontal planes (normal within 15deg of +Y), lowest first. */

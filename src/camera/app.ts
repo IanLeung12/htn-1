@@ -108,6 +108,15 @@ export interface CameraHandle {
    * the factor applied, or null when no model depth is available there.
    */
   calibrateAt(ndcX: number, ndcY: number, distanceM: number): number | null;
+  /**
+   * Two-point calibration: the pixel at ndcNear is mNear metres away, the one at ndcFar is
+   * mFar. Solves scale and shift of the model's relative inverse depth (re-evaluated every
+   * frame from those pixels) and persists both anchors in tuning. Returns false when the
+   * model has no output yet.
+   */
+  calibrateNearFar(ndcNear: { x: number; y: number }, mNear: number, ndcFar: { x: number; y: number }, mFar: number): boolean;
+  /** Forget the two-point anchors (back to the ground-plane fit). */
+  clearAnchors(): void;
 }
 
 export interface CameraApp {
@@ -203,6 +212,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       depthEstimator.adjust.scale = tuning.value.depthScale;
       depthEstimator.adjust.shiftM = tuning.value.depthShiftM;
       depthEstimator.adjust.smoothing = tuning.value.depthSmoothing;
+      const t = tuning.value;
+      depthEstimator.anchors.near = t.anchorNearM > 0 ? { u: t.anchorNearU, v: t.anchorNearV, metres: t.anchorNearM } : null;
+      depthEstimator.anchors.far = t.anchorFarM > 0 ? { u: t.anchorFarU, v: t.anchorFarV, metres: t.anchorFarM } : null;
     }
   };
   applyDepthAdjust();
@@ -216,7 +228,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       presetPitchDeg = t.pitchDeg;
     }
     if (key === null || key === 'fovYDeg') frameSource.setFovY((t.fovYDeg * Math.PI) / 180);
-    if (key === null || key === 'depthScale' || key === 'depthShiftM' || key === 'depthSmoothing') applyDepthAdjust();
+    if (key === null || key === 'depthScale' || key === 'depthShiftM' || key === 'depthSmoothing' || key.startsWith('anchor')) applyDepthAdjust();
   });
 
   // ---- Renderer: video under a transparent canvas ---------------------
@@ -443,6 +455,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     trackingOk: true,
     poseSampleAgeMs: Infinity,
     cameraHeightM: config.cameraHeightM,
+    tuningHeightM: tuning.value.cameraHeightM,
     fovYDeg: (config.fovY * 180) / Math.PI,
     depthState: 'idle',
     depthBackend: 'none',
@@ -486,15 +499,33 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   container.appendChild(hintEl);
   let lastHint = '';
   // `c`: calibrate depth scale from the object under the pointer (asks for its distance).
+  // `c` twice: first the NEAR anchor (hover something close, e.g. a can at 0.5 m), then the FAR
+  // anchor (the wall); together they pin scale and shift. `C` (shift) clears the anchors.
+  let pendingNear: { ndc: { x: number; y: number }; m: number } | null = null;
   const onCalibrateKey = (e: KeyboardEvent): void => {
-    if (e.key !== 'c' || e.ctrlKey || e.metaKey || e.altKey || headless) return;
+    if ((e.key !== 'c' && e.key !== 'C') || e.ctrlKey || e.metaKey || e.altKey || headless) return;
     const target = e.target as HTMLElement | null;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
-    const answer = window.prompt('Distance from the camera to the thing under the pointer (metres):', '1.0');
+    if (e.key === 'C') {
+      cameraHandle.clearAnchors();
+      pendingNear = null;
+      hintEl.textContent = 'Depth anchors cleared; back to the ground-plane scale.';
+      lastHint = hintEl.textContent;
+      return;
+    }
+    const which = pendingNear ? 'FAR' : 'NEAR';
+    const answer = window.prompt(`${which} anchor: distance from the camera to the thing under the pointer (metres):`, pendingNear ? '2.5' : '0.5');
     const d = answer === null ? NaN : Number(answer);
     if (!Number.isFinite(d) || d <= 0) return;
-    const factor = cameraHandle.calibrateAt(pointer.lastNdcX, pointer.lastNdcY, d);
-    hintEl.textContent = factor === null ? 'Calibration needs model depth under the pointer.' : `Depth scale set to x${factor.toFixed(2)}.`;
+    const ndc = { x: pointer.lastNdcX, y: pointer.lastNdcY };
+    if (!pendingNear) {
+      pendingNear = { ndc, m: d };
+      hintEl.textContent = `Near anchor ${d} m stored. Now hover something far and press c again.`;
+    } else {
+      const ok = cameraHandle.calibrateNearFar(pendingNear.ndc, pendingNear.m, ndc, d);
+      hintEl.textContent = ok ? `Two-point calibration set (${pendingNear.m} m / ${d} m); scale mode 'anchors'.` : 'Calibration needs model depth.';
+      pendingNear = null;
+    }
     lastHint = hintEl.textContent ?? '';
   };
   window.addEventListener('keydown', onCalibrateKey);
@@ -1013,6 +1044,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.trackingOk = q.trackingOk;
       diagState.poseSampleAgeMs = q.sampleAgeMs;
       diagState.cameraHeightM = surfaceEstimator.cameraHeightM;
+      diagState.tuningHeightM = tuning.value.cameraHeightM;
       diagState.fovYDeg = fovDeg;
       const ds = depthEstimator.status;
       diagState.depthState = ds.state;
@@ -1185,6 +1217,16 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     tuning,
     pickWorld,
     prepareRealObject,
+    calibrateNearFar(ndcNear, mNear, ndcFar, mFar) {
+      if (!(depthEstimator instanceof ModelDepthEstimator) || !depthEstimator.lastInverse) return false;
+      const near = ndcToVideoUv(ndcNear.x, ndcNear.y);
+      const far = ndcToVideoUv(ndcFar.x, ndcFar.y);
+      tuning.patch({ anchorNearU: near.u, anchorNearV: near.v, anchorNearM: mNear, anchorFarU: far.u, anchorFarV: far.v, anchorFarM: mFar, depthScale: 1, depthShiftM: 0 });
+      return true;
+    },
+    clearAnchors() {
+      tuning.patch({ anchorNearM: 0, anchorFarM: 0 });
+    },
     calibrateAt(ndcX, ndcY, distanceM) {
       const map = depthEstimator.latest;
       if (!map || map.source !== 'monocular') return null;

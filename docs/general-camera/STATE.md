@@ -133,6 +133,25 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
   default `volumeMaxSideM` is 1.2 (the far wardrobe is gone).
 - `v` toggles a wireframe overlay of surfaces/volumes (`src/camera/debug-overlay.ts`).
 
+### Third retest (230585e) and fixes
+
+- Picking and RANSAC now share one unprojection (`src/camera/pick.ts` + the estimator's
+  `lastFrame`), so a pick lands on the fitted plane (unit test: within 2 cm).
+- Pitch is guarded like roll: applied only from a plane with > 2000 points, > 1 m extent,
+  stable over 3 runs, clamped to the preset pitch +-10 degrees, 2 s smoothing;
+  diagnostics show raw vs applied and why it is (not) applied.
+- Ground = the plane explaining the BOTTOM 35% of image rows (tight 2.5 cm threshold, then
+  recounted over all points), not the largest plane; a laptop's desk edge wins over the bed.
+- Two-point calibration: `c` (near anchor, e.g. a can at 0.5 m) then `c` again (far anchor,
+  the wall); `C` clears. Anchors persist in tuning (`anchorNear*/anchorFar*`) and are
+  re-evaluated every frame from the model's inverse depth at those pixels (scale mode
+  'anchors'). `__camera.calibrateNearFar(ndcNear, mNear, ndcFar, mFar)` /
+  `clearAnchors()`. Diagnostics: "h tuning X (scale anchor) / fitted Y (pose)".
+- Spawn falls back to the hover's resolved world point; temporal scale no longer decays
+  confidence (which had silently disabled depth picks after a few frames).
+- Moved real objects render as a camera-facing impostor cut out of the live frame by the
+  depth blob (`src/camera/impostor.ts`), with a faint "moved from here" outline.
+
 ## Next steps
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,

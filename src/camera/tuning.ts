@@ -41,6 +41,13 @@ export interface CameraTuning {
   pointStride: number;
   /** 1 = estimate camera pitch/roll from the dominant depth plane; 0 = keep pitchDeg. */
   autoAttitude: number;
+  /** Two-point metric anchors (video UV 0..1 and metres); a distance of 0 = unset. */
+  anchorNearU: number;
+  anchorNearV: number;
+  anchorNearM: number;
+  anchorFarU: number;
+  anchorFarV: number;
+  anchorFarM: number;
 }
 
 export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
@@ -61,6 +68,12 @@ export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
   surfaceIntervalMs: 400,
   pointStride: 2,
   autoAttitude: 1,
+  anchorNearU: 0,
+  anchorNearV: 0,
+  anchorNearM: 0,
+  anchorFarU: 0,
+  anchorFarV: 0,
+  anchorFarM: 0,
 });
 
 export interface TuningSpecEntry {
@@ -89,6 +102,12 @@ export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
   surfaceIntervalMs: { min: 100, max: 2000, step: 10, label: 'Surface interval (ms)', group: 'planes' },
   pointStride: { min: 1, max: 8, step: 1, label: 'Point stride', group: 'volumes' },
   autoAttitude: { min: 0, max: 1, step: 1, label: 'Auto pitch/roll from depth', group: 'camera' },
+  anchorNearU: { min: 0, max: 1, step: 0.001, label: 'Near anchor u', group: 'depth' },
+  anchorNearV: { min: 0, max: 1, step: 0.001, label: 'Near anchor v', group: 'depth' },
+  anchorNearM: { min: 0, max: 10, step: 0.01, label: 'Near anchor (m)', group: 'depth' },
+  anchorFarU: { min: 0, max: 1, step: 0.001, label: 'Far anchor u', group: 'depth' },
+  anchorFarV: { min: 0, max: 1, step: 0.001, label: 'Far anchor v', group: 'depth' },
+  anchorFarM: { min: 0, max: 20, step: 0.01, label: 'Far anchor (m)', group: 'depth' },
 };
 
 export type TuningPresetId = 'laptop-desk' | 'phone-handheld' | 'tripod-room';

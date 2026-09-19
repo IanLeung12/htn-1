@@ -152,3 +152,48 @@ export function fitInverseDepthBand(inverse: Float32Array, width: number, height
   if (!(median > 0)) return null;
   return { a: median * anchorDepthM, b: 0, inlierFraction: 0.2, rms: 0, samples: vals.length };
 }
+
+/** Metric anchor: the pixel at video UV (u, v) is `metres` from the camera. */
+export interface DepthAnchor {
+  u: number;
+  v: number;
+  metres: number;
+}
+
+/** Median of a (2r+1)^2 patch of finite positive inverse-depth values; null if none. */
+export function sampleInverseMedian(inverse: Float32Array, width: number, height: number, u: number, v: number, r = 2): number | null {
+  const cx = Math.min(width - 1, Math.max(0, Math.floor(u * width)));
+  const cy = Math.min(height - 1, Math.max(0, Math.floor(v * height)));
+  const vals: number[] = [];
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const x = Math.min(width - 1, Math.max(0, cx + dx));
+      const y = Math.min(height - 1, Math.max(0, cy + dy));
+      const val = inverse[y * width + x] as number;
+      if (Number.isFinite(val)) vals.push(val);
+    }
+  }
+  if (vals.length === 0) return null;
+  vals.sort((a, b) => a - b);
+  return vals[Math.floor(vals.length / 2)] as number;
+}
+
+/**
+ * Scale AND shift from two user-given distances (v = a / z + b): a near and
+ * a far anchor pin the affine relation completely, which a single scale
+ * factor cannot (owner report: bed 0.7 m above the desk after scale-only
+ * calibration). Re-evaluated on every frame from the anchors' current
+ * inverse values, so per-frame drift of the relative model does not break it.
+ */
+export function fitInverseDepthToAnchors(inverse: Float32Array, width: number, height: number, near: DepthAnchor, far: DepthAnchor): InverseDepthFit | null {
+  if (!(near.metres > 0) || !(far.metres > 0) || Math.abs(near.metres - far.metres) < 0.05) return null;
+  const v1 = sampleInverseMedian(inverse, width, height, near.u, near.v);
+  const v2 = sampleInverseMedian(inverse, width, height, far.u, far.v);
+  if (v1 === null || v2 === null) return null;
+  const x1 = 1 / near.metres;
+  const x2 = 1 / far.metres;
+  const a = (v1 - v2) / (x1 - x2);
+  if (!(a > 0)) return null;
+  const b = v1 - a * x1;
+  return { a, b, inlierFraction: 1, rms: 0, samples: 2 };
+}
