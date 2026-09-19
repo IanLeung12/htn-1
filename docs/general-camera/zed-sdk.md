@@ -105,6 +105,10 @@ Text commands from the page: `{"cmd":"reset"}`, `{"cmd":"config","jpegWidth":128
   desk), and a horizontal plane with >= 300 inliers 0.02-1.2 m below the camera is a table whatever
   its extent (a desk seen edge-on from a camera resting on it). Picks in range holes fall back to
   the nearest horizontal surface along the pixel ray (`pickOnSurfaceThroughHole(..., fallbackNearest)`).
+- Drags (shared `src/camera/input/pointer.ts`): a depth hit under the pointer farther than
+  1.5x the grab distance (the pointer crossed a range hole and the pick fell through to the floor
+  metres away) is ignored and the object stays on its support plane at the ray/plane intersection;
+  the 6 m and 0.5 m/update clamps apply to every source.
 - Bridge `--depth-min` (default 0.2 m, `InitParameters.depth_minimum_distance`) keeps the near desk
   in range; the ZED's default 0.3 m left the bottom third of the frame invalid.
 - `tests/unit/fixtures/zed-sdk-desk-320x180.json` is a real bridge frame (camera on a desk, tuning

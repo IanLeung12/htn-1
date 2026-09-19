@@ -386,7 +386,12 @@ export class PointerInputAdapter {
     let hitId: string | null = null;
     const dragging = track.down && edge !== 'down' && track.planeY !== null;
     if (dragging) {
+      const maxDrag = Math.min(MAX_DRAG_DISTANCE_M, track.grabDistance * DRAG_DISTANCE_FACTOR);
       point = this.depthPick ? this.depthPick(track.ndcX, track.ndcY) : null;
+      // A depth hit much farther than the grab (the pointer crossed a stereo hole and the pick
+      // fell through to the floor metres away) is not where the user is dragging: keep the
+      // object on its support plane instead of running away to that hit.
+      if (point && Math.hypot(point.x - ray.origin.x, point.y - ray.origin.y, point.z - ray.origin.z) > maxDrag) point = null;
       if (point) {
         // Depth hit: the grab point rides at the same height above that surface as it was
         // grabbed above the surface under it, so the object glides onto a desk or bed.
@@ -400,7 +405,7 @@ export class PointerInputAdapter {
             z: ray.origin.z + ray.direction.z * track.fallbackDepth,
           };
         }
-        point = clampDistance(ray.origin, point, Math.min(MAX_DRAG_DISTANCE_M, track.grabDistance * DRAG_DISTANCE_FACTOR));
+        point = clampDistance(ray.origin, point, maxDrag);
       }
       point = clampStep(track.lastPoint, point, MAX_STEP_M);
     } else {

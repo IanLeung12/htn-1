@@ -245,4 +245,43 @@ describe('drag guards and flicks', () => {
     expect(p.z).toBeGreaterThan(-6);
     adapter.dispose();
   });
+
+  it('a depth pick that falls through a stereo hole to the far floor does not drag the object away', () => {
+    // ZED SDK map: a desk at y = 0.7 under a can; to the right of the can the near desk is a hole and
+    // the pick falls through to the floor plane 3 m away (owner report: grab at 0.4 m, release at 3.4 m).
+    const store = createSceneStore();
+    const start: Pose = { position: { x: 0.17, y: 0.78, z: -0.38 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    store.dispatch({ intent: { kind: 'spawn', object: cube('can', start) }, source: 'test', issuedAt: 0, basedOnVersion: 0 }, cond());
+    const el = fakeElement();
+    const deskY = 0.7;
+    const depthPick = (ndcX: number, ndcY: number): { x: number; y: number; z: number } | null => {
+      const ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
+      rayFromNdc(ndcX, ndcY, ray);
+      // Left of x = 0.3 m the desk has depth; right of it the map is a hole that resolves to the floor far away.
+      const onDesk = intersectPlaneY(ray, deskY);
+      if (onDesk && onDesk.x < 0.3) return onDesk;
+      return intersectPlaneY(ray, 0);
+    };
+    const adapter = new PointerInputAdapter({ element: el as unknown as HTMLElement, store, rayFromNdc, depthPick });
+    const px = pixelForWorld({ x: 0.17, y: 0.78, z: -0.38 });
+    adapter.inject('move', px.x, px.y);
+    adapter.update();
+    adapter.inject('down', px.x, px.y);
+    adapter.update();
+    const grabDist = Math.hypot(0.17 - CAM.x, 0.78 - CAM.y, -0.38 - CAM.z);
+    // Drag 15 % of the screen to the right: the pointer crosses into the hole.
+    for (let i = 1; i <= 30; i++) {
+      adapter.inject('move', px.x + i * 4, px.y);
+      adapter.update();
+      const p = adapter.state.right.position;
+      const dist = Math.hypot(p.x - CAM.x, p.y - CAM.y, p.z - CAM.z);
+      expect(dist).toBeLessThanOrEqual(1.5 * grabDist + 1e-6);
+      // Over the hole the object stays on its grab plane (the desk level), never on the floor.
+      expect(p.y).toBeGreaterThan(deskY - 0.05);
+    }
+    const end = adapter.state.right.position;
+    expect(end.x).toBeGreaterThan(0.17);
+    expect(Math.abs(end.z - -0.38)).toBeLessThan(0.6);
+    adapter.dispose();
+  });
 });
