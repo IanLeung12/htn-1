@@ -95,8 +95,20 @@ export function multiViewAgreement(plate: BackgroundPlate, frames: readonly Came
   return regionDepthRms(plate, withDepth) <= MAX_AGREEMENT_RMS_M;
 }
 
+/** Stereo depth with at least this LR-consistent fraction counts as measured (tier A allowed). */
+const STEREO_MEASURED_MIN_CONFIDENCE = 0.8;
+
 export function capTierForEstimatedDepth(plate: BackgroundPlate, verified: EditableObject, frames: readonly CameraFrame[]): CappedResult {
-  const sources = new Set(frames.map((f) => (f.depth ? (f.depthSource ?? 'sensor') : 'none')));
+  // Stereo depth is a measurement (triangulated, metric); a well-covered stereo frame is treated
+  // like a sensor frame, a sparse one like monocular (tier B cap).
+  const sources = new Set(
+    frames.map((f) => {
+      if (!f.depth) return 'none';
+      const src = f.depthSource ?? 'sensor';
+      if (src === 'stereo') return (f.depthConfidence ?? 0) >= STEREO_MEASURED_MIN_CONFIDENCE ? 'sensor' : 'monocular';
+      return src;
+    }),
+  );
   const allSensor = frames.length > 0 && [...sources].every((s) => s === 'sensor');
   if (allSensor) return { plate, tier: verified.tier, confidence: verified.tierConfidence, cap: 'none' };
 

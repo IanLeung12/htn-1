@@ -241,6 +241,8 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
   private lastProcessedDepthTimestamp: Millis = -Infinity;
   lastRunAt: Millis = -Infinity;
   lastStats: DepthSurfaceStats = { points: 0, floorInliers: 0, tables: 0, walls: 0, volumes: 0, runMs: 0 };
+  /** World-space extent of the fitted ground plane's inliers (for the wireframe overlay); null before a fit. */
+  groundExtent: Aabb | null = null;
   /** Camera->world transform used for the last run's point cloud (pick.ts must use the same). */
   lastFrame: { rotation: Pose['rotation']; position: Vec3 } | null = null;
   /** Raw plane fits of the last run (before extent filters), for diagnostics/tests. */
@@ -339,6 +341,23 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     // 2. World-space cloud (dominant plane at y = 0 when found, else the reported pose).
     transformPoints(points, worldRotation, worldPosition);
     this.lastFrame = { rotation: worldRotation, position: worldPosition };
+    if (dominant) {
+      // Inlier extent in world space (points are transformed in place, so read them back).
+      const gmin = { x: Infinity, y: Infinity, z: Infinity };
+      const gmax = { x: -Infinity, y: -Infinity, z: -Infinity };
+      for (const idx of dominant.inliers) {
+        const px = points[idx * 3] as number;
+        const py = points[idx * 3 + 1] as number;
+        const pz = points[idx * 3 + 2] as number;
+        if (px < gmin.x) gmin.x = px;
+        if (py < gmin.y) gmin.y = py;
+        if (pz < gmin.z) gmin.z = pz;
+        if (px > gmax.x) gmax.x = px;
+        if (py > gmax.y) gmax.y = py;
+        if (pz > gmax.z) gmax.z = pz;
+      }
+      this.groundExtent = Number.isFinite(gmin.x) ? { min: gmin, max: gmax } : null;
+    }
 
     // Best-first extraction (see ransac.ts extractPlanes), then merge layered horizontals.
     const extracted = extractPlanes(points, { ...ransacOpts, maxPlanes: 8, minInliers: tuning.planeMinInliers });

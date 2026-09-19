@@ -41,5 +41,6 @@ self.onmessage = (event: MessageEvent<UpdateMessage>) => {
     lastStats: estimator.lastStats,
     lastRunAt: estimator.lastRunAt,
     lastFrame: estimator.lastFrame,
+    groundExtent: estimator.groundExtent,
   });
 };

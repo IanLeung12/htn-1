@@ -56,6 +56,9 @@ import { WorkerSurfaceEstimator } from './surfaces/worker-estimator';
 import { SurfaceRegistry } from './surfaces/registry';
 import { SceneDebugOverlay } from './debug-overlay';
 import { ImpostorViews, isImpostorActive } from './impostor';
+import { ZedStereoFrameSource } from './stereo/zed-frame-source';
+import { loadZedCalibration } from './stereo/zed-calib';
+import { getStereoDepthFactory, type StereoCalibrationInput, type StereoDepthEstimator } from './stereo/contract';
 import { PointerInputAdapter, intersectPlaneY, type PointerRay } from './input/pointer';
 import { StaticPoseSource } from './pose/static';
 import type { VisualPoseSource } from './pose/visual';
@@ -135,6 +138,9 @@ const TARGET_FRAME_MS = 1000 / 60;
 const CAPTURE_WIDTH = 320;
 const DEPTH_SUBMIT_INTERVAL_MS = 150;
 const GRAB_INTERVAL_MS = 120;
+/** Stereo: match every other video frame at half the eye width. */
+const STEREO_SUBMIT_INTERVAL_MS = 60;
+const STEREO_WORK_WIDTH = 336;
 /** Attitude is only learned from planes at least this large (points), smoothed with this time constant. */
 const ATTITUDE_MIN_INLIERS = 2000;
 const ATTITUDE_TAU_MS = 2000;
@@ -197,11 +203,47 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   }
 
   // ---- Estimators -----------------------------------------------------
-  const frameSource = createFrameSource(config);
+  // A ZED 2 (side-by-side UVC stereo) is a stereo source: its left eye is the passthrough,
+  // both eyes feed the GPU stereo matcher, which replaces the monocular model.
+  const wantsStereo = config.source === 'stereo' || /zed/i.test(config.device ?? '') || (config.stereo === 'sbs' && !!config.url);
+  const zedSerial = config.zedSerial ?? (wantsStereo ? '25491304' : undefined);
+  const zedCalibration = wantsStereo && zedSerial ? await loadZedCalibration(zedSerial) : null;
+  const stereoSource = wantsStereo
+    ? new ZedStereoFrameSource({ fovY: config.fovY, deviceLabel: config.device ?? 'zed', mode: config.stereoMode ?? (config.stereo === 'sbs' ? 'hd720' : 'vga'), calibration: zedCalibration, url: config.stereo === 'sbs' ? config.url : undefined })
+    : null;
+  const frameSource: FrameSource = stereoSource ?? createFrameSource(config);
+  if (stereoSource) config.source = 'stereo';
   const poseSource = createPoseSource(config);
   // Floor prior until estimated depth is confident enough for RANSAC planes/volumes (computed in a worker).
   const surfaceEstimator = new WorkerSurfaceEstimator({ cameraHeightM: config.cameraHeightM, getTuning: () => tuning.value });
-  const depthEstimator = createDepthEstimator(config, () => surfaceEstimator.cameraHeightM);
+  // The GPU matcher lives in its own module (src/camera/stereo/contract.ts describes it); when it
+  // is not registered the monocular estimator answers and diagnostics say so.
+  const stereoFactory = stereoSource ? getStereoDepthFactory() : null;
+  const monocularFallback = config.depth === 'none' ? null : createDepthEstimator({ depth: config.depth === 'stereo' ? 'auto' : config.depth }, () => surfaceEstimator.cameraHeightM);
+  const stereoDepth: StereoDepthEstimator | null =
+    stereoSource && stereoFactory
+      ? stereoFactory({
+          getCalibration: (): StereoCalibrationInput | undefined => {
+            const sp = stereoSource.stereo;
+            if (!sp) return undefined;
+            const mode = config.stereoMode ?? 'vga';
+            return {
+              baselineM: sp.baselineM,
+              fxPx: sp.fxPx,
+              eyeWidth: sp.eyeWidth,
+              eyeHeight: sp.eyeHeight,
+              rectifyMaps: stereoSource.rectifyMaps(mode),
+              calibration: stereoSource.calibration,
+              mode,
+              calibrationId: sp.calibrationId,
+            };
+          },
+          workWidth: STEREO_WORK_WIDTH,
+          fxScale: () => tuning.value.stereoFxScale,
+          fallback: monocularFallback,
+        })
+      : null;
+  const depthEstimator: DepthEstimator = stereoDepth ?? (stereoSource ? (monocularFallback ?? createDepthEstimator({ depth: 'prior' }, () => 0)) : createDepthEstimator(config, () => surfaceEstimator.cameraHeightM));
   const staticBase: StaticPoseSource | null = (() => {
     const base = (poseSource as VisualPoseSource).base as unknown;
     return base instanceof StaticPoseSource ? base : poseSource instanceof StaticPoseSource ? poseSource : null;
@@ -235,7 +277,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.style.overflow = 'hidden';
   container.style.background = '#000';
-  const video = frameSource.video;
+  // Stereo: show the LEFT eye (a canvas the source keeps updated), never the side-by-side video.
+  const video: HTMLElement = stereoSource ? stereoSource.display : frameSource.video;
+  if (stereoSource) {
+    frameSource.video.style.display = 'none';
+    container.appendChild(frameSource.video);
+  }
   video.style.position = 'absolute';
   video.style.inset = '0';
   video.style.width = '100%';
@@ -483,6 +530,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     depthFrames: 0,
     depthPublishedAgoMs: Infinity,
     depthFitMode: 'none',
+    stereoLine: '',
     depthScale: tuning.value.depthScale,
     rollCorroborated: false,
     appliedPitchDeg: tuning.value.pitchDeg,
@@ -511,6 +559,15 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       pendingNear = null;
       hintEl.textContent = 'Depth anchors cleared; back to the ground-plane scale.';
       lastHint = hintEl.textContent;
+      return;
+    }
+    if (stereoDepth) {
+      const answer1 = window.prompt('Distance from the camera to the thing under the pointer (metres):', '1.0');
+      const d1 = answer1 === null ? NaN : Number(answer1);
+      if (!Number.isFinite(d1) || d1 <= 0) return;
+      const f = cameraHandle.calibrateAt(pointer.lastNdcX, pointer.lastNdcY, d1);
+      hintEl.textContent = f === null ? 'Calibration needs stereo depth under the pointer.' : `Stereo fx scale set to x${f.toFixed(3)}.`;
+      lastHint = hintEl.textContent ?? '';
       return;
     }
     const which = pendingNear ? 'FAR' : 'NEAR';
@@ -599,6 +656,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   function pickWorld(ndcX: number, ndcY: number): Vec3 | null {
     const map = depthEstimator.latest;
     if (!map || map.confidence < 0.25 || map.source === 'plane-prior') return null;
+    // (stereo maps carry validFraction as confidence; holes are 0 depth and pick as null below)
     if (performance.now() - map.timestamp > 3000) return null;
     const { u, v } = ndcToVideoUv(ndcX, ndcY);
     if (u < 0 || u > 1 || v < 0 || v > 1) return null;
@@ -987,10 +1045,11 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     // and, when the estimator is ready, for depth - at most one inference in flight, never awaited.
     if (inSession && frameSource.ready && now - lastGrabAt > GRAB_INTERVAL_MS) {
       lastGrabAt = now;
-      const grabbed = frameSource.grab(CAPTURE_WIDTH);
+      const grabbed = stereoSource && frameSource.grabStereo ? frameSource.grabStereo(STEREO_WORK_WIDTH) : frameSource.grab(CAPTURE_WIDTH);
       if (grabbed) {
         visualPose?.pushFrame(grabbed, intr, now);
-        if (depthEstimator.status.state === 'ready' && now - lastDepthSubmitAt > DEPTH_SUBMIT_INTERVAL_MS && depthEstimator.submit(grabbed, pose, intr)) {
+        const interval = stereoSource ? STEREO_SUBMIT_INTERVAL_MS : DEPTH_SUBMIT_INTERVAL_MS;
+        if (depthEstimator.status.state === 'ready' && now - lastDepthSubmitAt > interval && depthEstimator.submit(grabbed, pose, intr)) {
           lastDepthSubmitAt = now;
         }
       }
@@ -1056,6 +1115,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.depthFrames = ds.frames;
       diagState.depthPublishedAgoMs = Number.isFinite(ds.lastPublishedAt) ? now - ds.lastPublishedAt : Infinity;
       diagState.depthFitMode = ds.fitMode;
+      if (stereoDepth) {
+        const st = stereoDepth.stats;
+        diagState.stereoLine = `stereo ${st.workWidth}x${st.workHeight} d0..${st.maxDisparity} valid ${(st.validFraction * 100).toFixed(0)}% ${st.lastMs.toFixed(0)} ms ${st.rectified ? 'rectified' : 'unrectified'}${stereoSource?.stereo?.calibrationId ? ` SN${stereoSource.stereo.calibrationId}` : ''}`;
+      } else if (stereoSource) {
+        diagState.stereoLine = `stereo source ${stereoSource.stereo?.eyeWidth ?? 0}x${stereoSource.stereo?.eyeHeight ?? 0}${stereoSource.calibration ? ` SN${stereoSource.calibration.serial ?? '?'} calibrated` : ' nominal'}; matcher not available, monocular fallback`;
+      }
       diagState.depthScale = tuning.value.depthScale;
       diagState.rollCorroborated = surfaceEstimator.correction?.rollCorroborated ?? false;
       diagState.floorConfidence = surfaceEstimator.surfaces[0]?.confidence ?? 0;
@@ -1065,7 +1130,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.walls = surfaceEstimator.lastStats.walls;
       diagState.surfaceRunMs = surfaceEstimator.lastStats.runMs;
       diagState.motionPx = visualPose?.motionPx ?? 0;
-      diagState.tierCap = depthEstimator.latest?.source === 'monocular' ? 'B' : 'C';
+      diagState.tierCap = depthEstimator.latest?.source === 'stereo' && (depthEstimator.latest.confidence ?? 0) >= 0.8 ? 'A' : depthEstimator.latest?.source === 'monocular' || depthEstimator.latest?.source === 'stereo' ? 'B' : 'C';
       diagState.qualityTier = quality.decision.tier;
       diagState.frameP95 = perf.stats('frameMs').p95;
       diagState.objectCount = Object.keys(frameSnapshot.objects).length;
@@ -1229,7 +1294,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     },
     calibrateAt(ndcX, ndcY, distanceM) {
       const map = depthEstimator.latest;
-      if (!map || map.source !== 'monocular') return null;
+      if (!map || (map.source !== 'monocular' && map.source !== 'stereo')) return null;
       const { u, v } = ndcToVideoUv(ndcX, ndcY);
       if (u < 0 || u > 1 || v < 0 || v > 1) return null;
       const px = Math.min(map.width - 1, Math.floor(u * map.width));
@@ -1247,6 +1312,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       if (vals.length === 0 || !(distanceM > 0)) return null;
       vals.sort((a, b) => a - b);
       const current = vals[Math.floor(vals.length / 2)] as number;
+      if (map.source === 'stereo') {
+        // Z = fx * B / d: a distance error is a focal-length error; scale fx.
+        const factor = (distanceM / current) * tuning.value.stereoFxScale;
+        tuning.set('stereoFxScale', factor);
+        return factor;
+      }
       // `current` already includes the previous scale; the new factor is relative to the unscaled fit.
       const factor = (distanceM / current) * tuning.value.depthScale;
       tuning.set('depthScale', factor);

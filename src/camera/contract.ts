@@ -32,9 +32,14 @@ export interface GrabbedFrame {
   /** RGBA8, row-major, top row first (same convention as capture/contract.ts). */
   rgba: Uint8ClampedArray;
   timestamp: Millis;
+  /**
+   * Stereo sources: the RIGHT eye at the same size as `rgba` (which is then the LEFT eye).
+   * Absent for monocular sources.
+   */
+  right?: Uint8ClampedArray;
 }
 
-export type FrameSourceKind = 'camera' | 'file' | 'url';
+export type FrameSourceKind = 'camera' | 'file' | 'url' | 'stereo';
 
 export interface FrameSource {
   readonly kind: FrameSourceKind;
@@ -55,14 +60,34 @@ export interface FrameSource {
   grab(maxWidth: number): GrabbedFrame | null;
   /** Update the assumed vertical field of view (radians); intrinsics reflect it immediately. */
   setFovY(fovY: number): void;
+  /**
+   * Stereo sources only (ZED): grab both eyes at `maxEyeWidth`; `rgba` is the left eye,
+   * `right` the right eye. Monocular sources leave this undefined.
+   */
+  grabStereo?(maxEyeWidth: number): GrabbedFrame | null;
+  /** Stereo sources only: baseline and rectified-left intrinsics for the current mode (px at the grabbed eye width). */
+  readonly stereo?: StereoParams;
+}
+
+/** Stereo geometry the depth estimator needs, in pixels of the eye image at `eyeWidth x eyeHeight`. */
+export interface StereoParams {
+  baselineM: number;
+  eyeWidth: number;
+  eyeHeight: number;
+  /** Focal length (px) after rectification; nominal until a calibration is loaded. */
+  fxPx: number;
+  /** True when frames are rectified (calibration loaded and applied). */
+  rectified: boolean;
+  /** Serial / calibration id in use, null for nominal. */
+  calibrationId: string | null;
 }
 
 // ---------------------------------------------------------------------------
 // Depth
 // ---------------------------------------------------------------------------
 
-export type DepthBackend = 'webgpu' | 'wasm' | 'analytic' | 'none';
-export type DepthSource = 'sensor' | 'monocular' | 'plane-prior';
+export type DepthBackend = 'webgpu' | 'wasm' | 'webgl2' | 'analytic' | 'none';
+export type DepthSource = 'sensor' | 'monocular' | 'plane-prior' | 'stereo';
 
 /**
  * Relative inverse depth from a monocular model plus the affine fit that maps
@@ -201,9 +226,17 @@ export interface CameraAppConfig {
    */
   pose: 'auto' | 'static' | 'orientation' | 'visual';
   /** Depth estimator selection; 'auto' loads the model and falls back to the plane prior; 'injected' is a test seam. */
-  depth: 'auto' | 'model' | 'prior' | 'none' | 'injected';
+  depth: 'auto' | 'model' | 'prior' | 'none' | 'injected' | 'stereo';
   /** Requested facing mode for getUserMedia. */
   facing: 'environment' | 'user';
+  /** Substring of the video device label to select (e.g. 'zed'); undefined = facing mode. */
+  device?: string;
+  /** Stereo capture mode for a ZED: 'vga' (1344x376), 'hd720' (2560x720), 'hd1080' (3840x1080). */
+  stereoMode?: 'vga' | 'hd720' | 'hd1080';
+  /** ZED serial for the factory calibration (public/zed/SN<serial>.conf or the dev proxy). */
+  zedSerial?: string;
+  /** 'sbs' with source 'url'/'file': the video is a side-by-side stereo recording (ZED clip). */
+  stereo?: 'sbs';
 }
 
 export const DEFAULT_CAMERA_CONFIG: Readonly<CameraAppConfig> = {

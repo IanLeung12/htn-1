@@ -48,6 +48,8 @@ export interface CameraTuning {
   anchorFarU: number;
   anchorFarV: number;
   anchorFarM: number;
+  /** Stereo: multiplier on the calibrated/nominal focal length (single-point distance calibration). */
+  stereoFxScale: number;
 }
 
 export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
@@ -74,6 +76,7 @@ export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
   anchorFarU: 0,
   anchorFarV: 0,
   anchorFarM: 0,
+  stereoFxScale: 1,
 });
 
 export interface TuningSpecEntry {
@@ -108,6 +111,7 @@ export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
   anchorFarU: { min: 0, max: 1, step: 0.001, label: 'Far anchor u', group: 'depth' },
   anchorFarV: { min: 0, max: 1, step: 0.001, label: 'Far anchor v', group: 'depth' },
   anchorFarM: { min: 0, max: 20, step: 0.01, label: 'Far anchor (m)', group: 'depth' },
+  stereoFxScale: { min: 0.5, max: 2, step: 0.005, label: 'Stereo fx scale', group: 'depth' },
 };
 
 export type TuningPresetId = 'laptop-desk' | 'phone-handheld' | 'tripod-room';

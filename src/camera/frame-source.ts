@@ -263,6 +263,9 @@ export function createFrameSource(config: Pick<CameraAppConfig, 'source' | 'url'
       return new VideoFileFrameSource({ fovY: config.fovY, url: config.url });
     case 'file':
       return new VideoFileFrameSource({ fovY: config.fovY });
+    case 'stereo':
+      // Constructed by src/camera/app.ts through src/camera/stereo/zed-frame-source.ts (needs device/mode/calibration).
+      throw new Error('createFrameSource: stereo sources are created by the app (ZedStereoFrameSource)');
     default: {
       const exhaustive: never = config.source;
       throw new Error(`createFrameSource: unknown source kind ${String(exhaustive)}`);

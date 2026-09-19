@@ -22,7 +22,7 @@ export interface CameraFrame {
    * Additive, optional (general-camera backend, docs/general-camera/architecture.md):
    * where `depth` came from. Absent means a measured sensor/simulator depth.
    */
-  depthSource?: 'sensor' | 'monocular' | 'plane-prior';
+  depthSource?: 'sensor' | 'monocular' | 'plane-prior' | 'stereo';
   /** 0..1 confidence in `depth` (absent = 1). */
   depthConfidence?: number;
   /** 0..1 confidence in `pose` (absent = 1). */

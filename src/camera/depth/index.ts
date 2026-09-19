@@ -27,6 +27,9 @@ export function createDepthEstimator(config: Pick<CameraAppConfig, 'depth'>, _ca
       return new InjectableDepthEstimator();
     case 'model':
       return new ModelDepthEstimator({ fallback: null });
+    case 'stereo':
+      // Only meaningful with a stereo frame source (src/camera/app.ts builds StereoDepthEstimator itself); otherwise like 'auto'.
+      return new ModelDepthEstimator({ fallback: new PlanePriorDepthEstimator() });
     case 'auto':
     default:
       return new ModelDepthEstimator({ fallback: new PlanePriorDepthEstimator() });

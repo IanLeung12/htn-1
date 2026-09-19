@@ -5,7 +5,7 @@
  * immediately; results land on the next message. Without Worker support
  * (vitest/node, exotic browsers) it degrades to the in-process estimator.
  */
-import type { Millis, Pose } from '@/core/types';
+import type { Aabb, Millis, Pose } from '@/core/types';
 import type { DepthMap, EstimatedSurface, SurfaceEstimator } from '../contract';
 import type { DetectedVolume } from '@/capture/contract';
 import { DepthSurfaceEstimator, type DepthSurfaceStats, type FrameCorrection, type SurfaceTuning } from './depth-surfaces';
@@ -27,6 +27,7 @@ interface ResultMessage {
   lastStats: DepthSurfaceStats;
   lastRunAt: number;
   lastFrame: WorldFrame | null;
+  groundExtent: Aabb | null;
 }
 
 export class WorkerSurfaceEstimator implements SurfaceEstimator {
@@ -44,6 +45,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
   lastStats: DepthSurfaceStats = { points: 0, floorInliers: 0, tables: 0, walls: 0, volumes: 0, runMs: 0 };
   lastRunAt = -Infinity;
   lastFrame: WorldFrame | null = null;
+  groundExtent: Aabb | null = null;
   /** Which path is active, for diagnostics. */
   readonly mode: 'worker' | 'inline';
 
@@ -94,6 +96,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
       this.lastStats = est.lastStats;
       this.lastRunAt = est.lastRunAt;
       this.lastFrame = est.lastFrame;
+      this.groundExtent = est.groundExtent;
       return;
     }
     if (!depth || this.busy) return;
@@ -126,6 +129,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
     this.lastStats = msg.lastStats;
     this.lastRunAt = msg.lastRunAt;
     this.lastFrame = msg.lastFrame;
+    this.groundExtent = msg.groundExtent;
   }
 
   dispose(): void {

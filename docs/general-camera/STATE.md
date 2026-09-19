@@ -152,6 +152,23 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
 - Moved real objects render as a camera-facing impostor cut out of the live frame by the
   depth blob (`src/camera/impostor.ts`), with a faint "moved from here" outline.
 
+### ZED 2 stereo (owner priority)
+
+- `src/camera/stereo/contract.ts` is the boundary: input = `GrabbedFrame` with `rgba` (left
+  eye) + `right`, at the work width; output = `DepthMap` in metres (`source: 'stereo'`,
+  `confidence` = LR-consistent fraction) + `StereoDepthStats`. The GPU matcher is built on the
+  `zed-stereo-depth` branch and registers `createStereoDepthEstimator` via
+  `registerStereoDepth`; without it the app uses the monocular fallback and diagnostics say
+  "matcher not available".
+- `ZedStereoFrameSource` (`stereo/zed-frame-source.ts`): device by label (`?device=zed`),
+  modes vga/hd720/hd1080 (`?mode=`), left-eye `display` canvas is the passthrough, both eyes
+  via `grabStereo`; `?source=url&url=/zed/zed2-sbs-hd720-8s.webm&stereo=sbs` plays the owner's
+  8 s HD720 clip through the same path. Factory calibration `public/zed/SN25491304.conf`
+  (`stereo/zed-calib.ts`: INI parse, Rodrigues, stereoRectify, undistort+rectify maps;
+  disparity positive, P2 x-translation = -fx*B), dev proxy `/zed-calib?sn=` for other serials.
+- Tier policy: stereo frames with LR coverage >= 0.8 count as measured (tier A allowed).
+- Landing card: device select, stereo mode, serial (persisted).
+
 ## Next steps
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,

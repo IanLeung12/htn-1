@@ -29,7 +29,7 @@ export interface CameraDiagnosticsState {
   floorConfidence: number;
   surfaceCount: number;
   volumeCount: number;
-  tierCap: 'B' | 'C';
+  tierCap: 'A' | 'B' | 'C';
   qualityTier: QualityTier;
   frameP95: number;
   appMs: number;
@@ -49,6 +49,8 @@ export interface CameraDiagnosticsState {
   depthFrames: number;
   depthPublishedAgoMs: number;
   depthFitMode: string;
+  /** Stereo estimator stats line ("stereo 672x376 d0..64 valid 83% 9 ms rectified"), empty for other backends. */
+  stereoLine: string;
   /** Tuning depth scale multiplier in force. */
   depthScale: number;
   rollCorroborated: boolean;
@@ -118,6 +120,7 @@ export class CameraDiagnostics {
       `depth    ${s.depthState} ${s.depthBackend}${s.depthModel ? ` ${s.depthModel.split('/').pop()}` : ''}`,
       `         infer ${fmtMs(s.depthInferenceMs)} age ${fmtMs(s.depthAgeMs)} conf ${s.depthConfidence.toFixed(2)}`,
       `         frames ${s.depthFrames} published ${fmtMs(s.depthPublishedAgoMs)} ago  scale ${s.depthFitMode} x${s.depthScale.toFixed(2)}`,
+      ...(s.stereoLine ? [`         ${s.stereoLine}`] : []),
       `ground   conf ${s.floorConfidence.toFixed(2)}  raw pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}${s.rollCorroborated ? ' (wall-confirmed)' : ' (roll clamped)'}`,
       `attitude applied pitch ${s.appliedPitchDeg.toFixed(1)} roll ${s.appliedRollDeg.toFixed(1)}  ${s.attitudeNote}`,
       `scene    surfaces ${s.surfaceCount} (tables ${s.tables}, walls ${s.walls})  volumes ${s.volumeCount}  ransac ${s.surfaceRunMs.toFixed(0)} ms  motion ${s.motionPx.toFixed(1)} px`,
