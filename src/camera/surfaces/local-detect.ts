@@ -125,7 +125,12 @@ export function detectVolumeAtPixel(
   // height and would otherwise leave nothing "above the support".
   const localMinY = supportYAround(map, frame, seed, radius);
   const registered = supportTopAt(surfaces, seed);
-  const support = registered.surface && Math.abs(registered.y - localMinY) <= 0.06 ? registered : { y: localMinY, surface: null };
+  // When both agree take the LOWER of the two: a plane fitted to the far desk sits a few
+  // centimetres above the near desk seen edge-on, which would swallow a low object's base.
+  const support =
+    registered.surface && Math.abs(registered.y - localMinY) <= 0.06
+      ? { y: Math.min(registered.y, localMinY), surface: registered.surface }
+      : { y: localMinY, surface: null };
   trace.localMinY = localMinY;
   trace.registeredY = registered.surface ? registered.y : null;
   trace.supportY = support.y;
