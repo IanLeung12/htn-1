@@ -79,7 +79,7 @@ import { SilhouetteTracker, depthFrameFromMap, type SilhouetteMask } from './edi
 import { checkObjectGone } from './edit/gone-check';
 import { StaticCameraEraser } from './edit/eraser';
 import { averageFrames } from './edit/average-frames';
-import { pushAppearanceFrame, APPEARANCE_FRAME_COUNT } from './edit/appearance';
+import { pushAppearanceFrame, APPEARANCE_FRAME_COUNT, cameraMovedFromAppearance } from './edit/appearance';
 import { capTierForSingleViewpoint } from './edit/single-viewpoint-tier';
 
 export interface CameraAppOptions {
@@ -1221,7 +1221,20 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     views.update(frameSnapshot);
     views.updatePreview(frameSnapshot, previewGroup);
     impostors.update(frameSnapshot, camera, now);
-    // The impostor replaces ObjectViews' edge-on depth mesh for the same object.
+    // Multi-frame appearance (edit/appearance.ts): the impostor (single-viewpoint billboard)
+    // is the primary path only while the camera hasn't moved away from where its retained
+    // appearance frames were captured; once it has, force the impostor hidden and fall back
+    // to ObjectViews' own depth-mesh appearance (built from every retained frame at once,
+    // src/render/objects.ts), which stays correct from other angles.
+    for (const obj of Object.values(frameSnapshot.objects)) {
+      if (obj.origin !== 'physical' || !isImpostorActive(impostors, obj.id)) continue;
+      const frames = frameStore.get(appearanceFrameKey(obj.id));
+      if (frames && frames.length > 0 && cameraMovedFromAppearance(frames, poseSource.pose)) {
+        impostors.forceHide(obj.id);
+      }
+    }
+    // The impostor (when still active) replaces ObjectViews' own depth-mesh appearance for
+    // the same object.
     views.group.traverse((o) => {
       if (!o.name.startsWith('object-appearance:')) return;
       const id = o.name.slice('object-appearance:'.length);
