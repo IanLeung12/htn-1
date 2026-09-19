@@ -21,9 +21,20 @@
  * wiring in src/camera/app.ts, which measures it); `BackgroundHull` remains
  * the fallback for everything else (camera moved, no plate frame yet, no
  * tracked mask yet).
+ *
+ * SYNTHETIC path (docs/general-camera/STATE.md "Synthetic delete"): when an
+ * object has a tracked mask but NO clean-plate frame (the user never took it
+ * off the desk), and `synthetic()` allows it, the plate frame is fabricated
+ * by `./inpaint.ts` from the newest APPEARANCE frame (the last frame stored
+ * under `appearanceFrameKey(id)` while the object still sat at its original
+ * spot - not the live frame, which may already show it moved, or a hand)
+ * and composited exactly like a real plate. Cached per (frame timestamp,
+ * mask bbox); `isSynthetic(id)` reports which path an object is on.
  */
 import * as THREE from 'three';
-import type { FrameStore } from '@/capture/frame-store';
+import { appearanceFrameKey, type FrameStore } from '@/capture/frame-store';
+import type { CameraFrame } from '@/capture/contract';
+import { inpaintMask } from './inpaint';
 import type { EditableObject, SceneSnapshot } from '@/core/types';
 import type { SilhouetteMask } from './silhouette';
 import { cutoutFromMask } from './mask-cutout';
@@ -45,6 +56,21 @@ interface EraserEntry {
   texture: THREE.DataTexture;
   builtKey: string | undefined;
   active: boolean;
+  synthetic: boolean;
+  /** Inpainted plate frame, keyed by (source frame timestamp, mask bbox). */
+  syntheticKey: string | undefined;
+  syntheticFrame: CameraFrame | undefined;
+}
+
+export interface StaticCameraEraserOptions {
+  /**
+   * Whether an object WITHOUT a clean-plate frame may be composited from an
+   * inpainted appearance frame (`./inpaint.ts`). Default: never (real plates
+   * only). The camera app wires this to tuning `syntheticDelete`.
+   */
+  synthetic?: () => boolean;
+  /** Ring width (px, in the appearance frame) the inpaint copies from. Default 6. */
+  inpaintRingPx?: number;
 }
 
 /**
@@ -57,8 +83,9 @@ export class StaticCameraEraser {
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, EraserEntry>();
   private activeIds = new Set<string>();
+  private syntheticIds = new Set<string>();
 
-  constructor(private readonly frameStore: FrameStore) {}
+  constructor(private readonly frameStore: FrameStore, private readonly options: StaticCameraEraserOptions = {}) {}
 
   /**
    * `masks` maps objectId -> its tracked silhouette mask (in the depth
@@ -76,6 +103,7 @@ export class StaticCameraEraser {
     camera: THREE.Camera,
   ): number {
     this.activeIds = new Set();
+    this.syntheticIds = new Set();
     if (!(motionPx < STATIC_CAMERA_MOTION_PX) || depthGridWidth <= 0 || depthGridHeight <= 0) {
       for (const entry of this.entries.values()) entry.mesh.visible = false;
       return 0;
@@ -86,16 +114,38 @@ export class StaticCameraEraser {
       const mask = masks.get(obj.id);
       if (!mask) continue;
       const frames = this.frameStore.get(obj.id);
-      const plateFrame = frames && frames.length > 0 ? frames[0] : undefined;
+      let plateFrame = frames && frames.length > 0 ? frames[0] : undefined;
+      let synthetic = false;
+      let entry = this.entries.get(obj.id);
+      if (!plateFrame && this.options.synthetic?.()) {
+        // No clean plate: fabricate one from the newest frame that still shows the object
+        // at its original spot (appearance frames are appended oldest-first).
+        const appearance = this.frameStore.get(appearanceFrameKey(obj.id));
+        const source = appearance && appearance.length > 0 ? appearance[appearance.length - 1] : undefined;
+        if (source) {
+          if (!entry) {
+            entry = this.buildEntry();
+            this.entries.set(obj.id, entry);
+            this.group.add(entry.mesh);
+          }
+          const synthKey = `${source.timestamp}:${mask.x0}:${mask.y0}:${mask.width}:${mask.height}`;
+          if (entry.syntheticKey !== synthKey || !entry.syntheticFrame) {
+            entry.syntheticFrame = inpaintMask(source, mask, this.options.inpaintRingPx ?? 6, { width: depthGridWidth, height: depthGridHeight });
+            entry.syntheticKey = synthKey;
+          }
+          plateFrame = entry.syntheticFrame;
+          synthetic = true;
+        }
+      }
       if (!plateFrame) continue;
 
-      const key = `${plateFrame.timestamp}:${mask.x0}:${mask.y0}:${mask.width}:${mask.height}`;
-      let entry = this.entries.get(obj.id);
+      const key = `${synthetic ? 'synthetic' : 'plate'}:${plateFrame.timestamp}:${mask.x0}:${mask.y0}:${mask.width}:${mask.height}`;
       if (!entry) {
         entry = this.buildEntry();
         this.entries.set(obj.id, entry);
         this.group.add(entry.mesh);
       }
+      entry.synthetic = synthetic;
 
       if (entry.builtKey !== key) {
         const cutout = cutoutFromMask(plateFrame, obj, mask, depthGridWidth, depthGridHeight);
@@ -118,6 +168,7 @@ export class StaticCameraEraser {
       entry.mesh.rotation.set(0, yaw, 0);
       entry.mesh.visible = true;
       this.activeIds.add(obj.id);
+      if (synthetic) this.syntheticIds.add(obj.id);
     }
 
     for (const [id, entry] of this.entries) {
@@ -131,9 +182,19 @@ export class StaticCameraEraser {
     return this.activeIds.has(objectId);
   }
 
+  /** True when `objectId`'s composited quad this frame is an inpainted (synthetic) fill, not a clean plate. */
+  isSynthetic(objectId: string): boolean {
+    return this.syntheticIds.has(objectId);
+  }
+
   /** Number of objects currently composited via the fast path. */
   get activeCount(): number {
     return this.activeIds.size;
+  }
+
+  /** Number of those composited from an inpainted appearance frame rather than a clean plate. */
+  get syntheticCount(): number {
+    return this.syntheticIds.size;
   }
 
   private buildEntry(): EraserEntry {
@@ -166,7 +227,7 @@ export class StaticCameraEraser {
     mesh.renderOrder = 2;
     mesh.visible = false;
 
-    return { mesh, material, texture, builtKey: undefined, active: false };
+    return { mesh, material, texture, builtKey: undefined, active: false, synthetic: false, syntheticKey: undefined, syntheticFrame: undefined };
   }
 
   private applyCutout(entry: EraserEntry, cutout: { width: number; height: number; rgba: Uint8ClampedArray; widthM: number; heightM: number; center: { x: number; y: number; z: number } }): void {
@@ -197,5 +258,6 @@ export class StaticCameraEraser {
     }
     this.entries.clear();
     this.activeIds.clear();
+    this.syntheticIds.clear();
   }
 }

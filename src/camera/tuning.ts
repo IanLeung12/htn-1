@@ -54,6 +54,12 @@ export interface CameraTuning {
   occluderEnabled: number;
   /** Metres added to the live depth before it's written to the depth buffer (see depth-occluder.ts). */
   occluderBiasM: number;
+  /**
+   * 1 = a discovered real object can be deleted without physically removing it: its
+   * silhouette is inpainted from the surrounding pixels (tier B, honestly labelled
+   * synthetic; see src/camera/edit/inpaint.ts). 0 = delete needs a captured clean plate.
+   */
+  syntheticDelete: number;
 }
 
 export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
@@ -83,6 +89,7 @@ export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
   stereoFxScale: 1,
   occluderEnabled: 1,
   occluderBiasM: 0.02,
+  syntheticDelete: 1,
 });
 
 export interface TuningSpecEntry {
@@ -90,7 +97,7 @@ export interface TuningSpecEntry {
   max: number;
   step: number;
   label: string;
-  group: 'camera' | 'depth' | 'planes' | 'volumes' | 'occlusion';
+  group: 'camera' | 'depth' | 'planes' | 'volumes' | 'occlusion' | 'edit';
 }
 
 export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
@@ -120,6 +127,7 @@ export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
   stereoFxScale: { min: 0.5, max: 2, step: 0.005, label: 'Stereo fx scale', group: 'depth' },
   occluderEnabled: { min: 0, max: 1, step: 1, label: 'Depth occlusion (o)', group: 'occlusion' },
   occluderBiasM: { min: 0, max: 0.2, step: 0.005, label: 'Occluder bias (m)', group: 'occlusion' },
+  syntheticDelete: { min: 0, max: 1, step: 1, label: 'Synthetic delete', group: 'edit' },
 };
 
 export type TuningPresetId = 'laptop-desk' | 'phone-handheld' | 'tripod-room';

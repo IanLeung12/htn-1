@@ -27,7 +27,8 @@ import {
 } from '@/core';
 import type { EditableObject, FrameSample, Pose, QualityDecision, RuntimeConditions, SceneSnapshot, Vec3, VisualMode } from '@/core/types';
 import { IDENTITY_QUAT, ROOM_ANCHOR_ID } from '@/core/types';
-import { quatRotateVec3 } from '@/core/math';
+import { quatRotateVec3, distance as distanceVec3 } from '@/core/math';
+import { createResolver } from '@/core/resolver';
 import type { AppHandle, CaptureGuide, XRFeatureReport } from '@/app/contract';
 import { createRenderer } from '@/render/renderer';
 import { ObjectViews } from '@/render/objects';
@@ -79,6 +80,7 @@ import { capTierForEstimatedDepth } from './tier-cap';
 import { SilhouetteTracker, depthFrameFromMap, type SilhouetteMask } from './edit/silhouette';
 import { checkObjectGone } from './edit/gone-check';
 import { StaticCameraEraser } from './edit/eraser';
+import { SYNTHETIC_DELETE_MIN_DONOR_FRACTION } from './edit/inpaint';
 import { averageFrames } from './edit/average-frames';
 import { pushAppearanceFrame, APPEARANCE_FRAME_COUNT, cameraMovedFromAppearance } from './edit/appearance';
 import { detectVolumeAtPixel, type LocalDetectTrace } from './surfaces/local-detect';
@@ -120,7 +122,7 @@ export interface CameraHandle {
   setCameraHeight(h: number): void;
   setFovY(rad: number): void;
   /** Renderer-side counts for tests/diagnostics (hull meshes drawn over the video, object views). */
-  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number; impostors: number; eraserActive: number; masksTracked: number };
+  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number; impostors: number; eraserActive: number; eraserSynthetic: number; masksTracked: number };
   /** Live tunables (persisted in localStorage; `t` toggles the slider panel). */
   readonly tuning: TuningStore;
   /** World point the estimated depth sees at a canvas NDC position (snapped onto the surface below); null without depth. */
@@ -226,7 +228,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   config.pitchRad = (tuning.value.pitchDeg * Math.PI) / 180;
   config.fovY = (tuning.value.fovYDeg * Math.PI) / 180;
 
-  const store = createSceneStore();
+  // A synthetic_completion plate's coverage is its RING donor fraction (synthetic-plate.ts), so
+  // the truthful 0.6 delete floor would always reject it; the synthetic delete path (tuning
+  // `syntheticDelete`, edit/inpaint.ts) needs only a plausible ring to copy from.
+  const store = createSceneStore(undefined, {
+    resolver: createResolver({ minDeleteCoverageByProvenance: { synthetic_completion: SYNTHETIC_DELETE_MIN_DONOR_FRACTION } }),
+  });
   const perf = createPerfTracker();
   const quality = createQualityManager();
   const freshness = createFreshnessBus();
@@ -386,7 +393,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // tracked silhouette instead of BackgroundHull's reprojected 3D depth mesh (exact when the
   // camera hasn't moved). A world-space quad in the main scene (see edit/eraser.ts), drawn over
   // the hull's own (renderOrder 0.5-1) meshes.
-  const staticEraser = new StaticCameraEraser(frameStore);
+  // With tuning `syntheticDelete` on it also fabricates the plate for objects that were never
+  // physically removed, by inpainting their silhouette in the newest appearance frame.
+  const staticEraser = new StaticCameraEraser(frameStore, { synthetic: () => tuning.value.syntheticDelete >= 1 });
   scene.add(staticEraser.group);
   const debugOverlay = new SceneDebugOverlay();
   debugOverlay.setVisible(false);
@@ -707,6 +716,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     if (sel && sel.origin === 'physical') {
       if (!sel.visible) return `${sel.userName} is deleted: Restore or Undo brings it back (say "put it back").`;
       if (sel.tier === 'D') return `${sel.userName}: drag to move (tier D). To delete it, take it out of the picture, then press Capture plate.`;
+      if (sel.tier === 'B' && !sel.background.some((p) => p.provenance !== 'synthetic_completion' && p.provenance !== 'unavailable')) {
+        return `${sel.userName}: Delete hides it with a synthetic fill (press Capture plate with the object removed for a real one).`;
+      }
       if (sel.tier === 'B' || sel.tier === 'C') return `${sel.userName}: clean plate captured (tier ${sel.tier}); Delete hides it behind the captured background.`;
       if (sel.tier === 'E') return `${sel.userName} has no support surface; only restore/undo.`;
     }
@@ -1037,15 +1049,30 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     const support = obj.supportSurfaces[0] ? store.current.surfaces[obj.supportSurfaces[0]] : undefined;
     const half = obj.occlusionProxy.kind === 'box' ? obj.occlusionProxy.halfExtents : { x: 0.15, y: 0.15, z: 0.15 };
     const region = footprintFromProxy(obj.currentPose.position, half, support);
-    const { plate, donorFraction } = synthesizeSupportPlate(obj, region, frame, { registry: textureRegistry });
+    const synthesized = synthesizeSupportPlate(obj, region, frame, { registry: textureRegistry });
+    const { donorFraction } = synthesized;
+    let plate = synthesized.plate;
     if (plate.provenance === 'unavailable') return { tier: obj.tier, donorFraction };
+    // Synthetic delete (docs/general-camera/STATE.md): with a static camera the object can be
+    // deleted without being physically removed - the eraser inpaints its silhouette from the
+    // surrounding pixels (edit/inpaint.ts). The plate keeps its honest synthetic_completion /
+    // completed_v3 label and ring-donor coverage; only the tier lifts to B (delete allowed),
+    // with a confidence capped at 0.5 because the fill is approximate. The envelope is widened
+    // just enough to contain the pose it was synthesized from (the fixed camera), which is
+    // the only viewpoint the fill is claimed plausible from.
+    const synthetic = tuning.value.syntheticDelete >= 1 && donorFraction >= SYNTHETIC_DELETE_MIN_DONOR_FRACTION;
+    if (synthetic) {
+      const needed = distanceVec3(frame.pose.position, plate.envelope.center) + 0.25;
+      if (needed > plate.envelope.radius) plate = { ...plate, envelope: { ...plate.envelope, radius: needed } };
+    }
     store.dispatch(
       { intent: { kind: 'updateBackground', objectId, plate }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
       conditions(),
     );
-    const tier = tierForSyntheticPlate();
+    const tier = synthetic ? 'B' : tierForSyntheticPlate();
+    const confidence = synthetic ? Math.min(0.5, donorFraction) : Math.min(0.6, donorFraction);
     store.dispatch(
-      { intent: { kind: 'setTier', objectId, tier, confidence: Math.min(0.6, donorFraction) }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+      { intent: { kind: 'setTier', objectId, tier, confidence }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
       conditions(),
     );
     return { tier, donorFraction };
@@ -1592,6 +1619,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
         appearanceActive,
         impostors: impostorCount,
         eraserActive: staticEraser.activeCount,
+        eraserSynthetic: staticEraser.syntheticCount,
         masksTracked,
       };
     },
