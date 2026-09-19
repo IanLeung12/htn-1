@@ -178,6 +178,8 @@ const ATTITUDE_STABLE_RUNS = 3;
 const ATTITUDE_STABLE_RAD = (3 * Math.PI) / 180;
 const ATTITUDE_PITCH_CLAMP_RAD = (10 * Math.PI) / 180;
 /** Farthest a spawned object is placed from the camera along the floor (m). */
+/** Same tolerance as the physics support margin (core/physics.ts): estimated table boxes end at the last observed point. */
+const SPAWN_TABLE_MARGIN_M = 0.15;
 const SPAWN_MAX_M = 2.0;
 /** Clean-plate shots requested from a moving (non-static) camera; see tier-cap.ts's agreement rule. */
 const MULTI_SHOT_COUNT = 3;
@@ -769,6 +771,25 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     return below ? { x: p.x, y: below.aabb.max.y, z: p.z } : p;
   }
 
+  /** Nearest point where `ray` crosses a registered table top (box grown by the physics support margin). */
+  function nearestTableHit(ray: PointerRay): Vec3 | null {
+    let best: Vec3 | null = null;
+    let bestDist = Infinity;
+    for (const s of Object.values(store.current.surfaces)) {
+      if (s.orientation !== 'horizontal' || s.label === 'floor') continue;
+      const hit = intersectPlaneY(ray, s.aabb.max.y);
+      if (!hit) continue;
+      const m = SPAWN_TABLE_MARGIN_M;
+      if (hit.x < s.aabb.min.x - m || hit.x > s.aabb.max.x + m || hit.z < s.aabb.min.z - m || hit.z > s.aabb.max.z + m) continue;
+      const dist = Math.hypot(hit.x - ray.origin.x, hit.y - ray.origin.y, hit.z - ray.origin.z);
+      if (dist < bestDist && dist <= SPAWN_MAX_M) {
+        bestDist = dist;
+        best = hit;
+      }
+    }
+    return best;
+  }
+
   function spawnTarget(): Vec3 {
     // The last pointer position counts even after the pointer left the canvas to press a
     // HUD button (owner report: spawn ignored the pointer because the hover track was gone).
@@ -781,6 +802,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       if (Number.isFinite(pw.x) && Math.hypot(pw.x, pw.z) > 0 && pw.y >= -0.05 && pw.y < 3) return dropToSupport({ x: pw.x, y: pw.y, z: pw.z });
       const ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
       rayFromNdc(pointer.lastNdcX, pointer.lastNdcY, ray);
+      // No depth under the pointer (hole, a person crossing, the sensor's near range): the
+      // pointer ray through the nearest registered table top wins over the floor metres away.
+      const onTable = nearestTableHit(ray);
+      if (onTable) return onTable;
       const ground = intersectPlaneY(ray, 0);
       if (ground && Math.hypot(ground.x - ray.origin.x, ground.z - ray.origin.z) <= SPAWN_MAX_M) return dropToSupport(ground);
     }
