@@ -137,6 +137,7 @@ export interface CameraHandle {
   detectAt(ndcX: number, ndcY: number): unknown;
   /** Visible meshes in the scene (name, world position, world size, renderOrder). */
   debugScene(): unknown;
+  debugEraser(): unknown;
   /** Capture appearance + synthetic support plate for a discovered real object (tier D) so it can be moved. */
   prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }>;
   /**
@@ -1596,6 +1597,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     },
     ndcToVideoUv,
     debugEraserPositions: () => staticEraser.group.children.map((c) => ({ pos: c.position.clone(), visible: c.visible })),
+    debugEraser: () => staticEraser.debugEntries(),
     debugScene: () => {
       const out: { name: string; visible: boolean; pos: number[]; size: number[]; order: number }[] = [];
       scene.updateMatrixWorld(true);

@@ -193,6 +193,31 @@ export class StaticCameraEraser {
   }
 
   /** Number of those composited from an inpainted appearance frame rather than a clean plate. */
+  /** Diagnostics: per active entry, the texture size, mean colour/alpha and whether it is synthetic. */
+  debugEntries(): { id: string; synthetic: boolean; key: string | undefined; tex: number[]; mean: number[]; pos: number[]; size: number[] }[] {
+    const out: { id: string; synthetic: boolean; key: string | undefined; tex: number[]; mean: number[]; pos: number[]; size: number[] }[] = [];
+    for (const [id, e] of this.entries) {
+      if (!e.active) continue;
+      const img = e.texture.image as { data: Uint8ClampedArray; width: number; height: number };
+      const data = img.data;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      const n = data.length / 4;
+      for (let i = 0; i < data.length; i += 4) {
+        r += data[i]!;
+        g += data[i + 1]!;
+        b += data[i + 2]!;
+        a += data[i + 3]!;
+      }
+      const geom = e.mesh.geometry as THREE.PlaneGeometry;
+      const p = geom.parameters;
+      out.push({ id, synthetic: e.synthetic, key: e.builtKey ?? e.syntheticKey, tex: [img.width, img.height], mean: [r / n, g / n, b / n, a / n].map((v) => Math.round(v)), pos: [e.mesh.position.x, e.mesh.position.y, e.mesh.position.z].map((v) => +v.toFixed(3)), size: [p.width, p.height].map((v) => +v.toFixed(3)) });
+    }
+    return out;
+  }
+
   get syntheticCount(): number {
     return this.syntheticIds.size;
   }
