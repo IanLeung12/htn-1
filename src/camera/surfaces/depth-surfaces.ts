@@ -31,7 +31,7 @@ import { aabbIntersects, distance, quatConjugate, quatFromAxisAngle, quatMultipl
 import type { DepthMap, EstimatedSurface, SurfaceEstimator } from '@/camera/contract';
 import type { DetectedVolume } from '@/capture/contract';
 import { makeFloorSurface } from './floor-prior';
-import { clusterAbovePlane, depthToPointsWithRows, extractPlanes, findHorizontalPlanes, findHorizontalPlanesHinted, mergeHorizontalPlanes, ransacPlane, type PlaneFit } from './ransac';
+import { clusterAbovePlane, depthToPointsWithRows, extractPlanes, findHorizontalPlanes, mergeHorizontalPlanes, ransacPlane, type PlaneFit } from './ransac';
 
 /** The subset of camera tuning this estimator consumes (see src/camera/tuning.ts). */
 export interface SurfaceTuning {
@@ -121,8 +121,6 @@ export interface FrameCorrection {
 const TABLE_MAX_HEIGHT_M = 1.6;
 /** trustPose: the pose knows which way is up, so the ground candidate must be within this of horizontal. */
 const TRACKED_GROUND_CONE_RAD = (10 * Math.PI) / 180;
-/** Horizontal planes (tables) in a tracked frame must be within this of level. */
-const TRACKED_HORIZONTAL_CONE_RAD = (7 * Math.PI) / 180;
 /** trustPose: a horizontal plane with this many inliers between TRACKED_TABLE_MIN/MAX_BELOW_M under the camera is a table whatever its extent (a desk seen edge-on from a camera resting on it). */
 const TRACKED_TABLE_MIN_INLIERS = 300;
 const TRACKED_TABLE_MIN_BELOW_M = 0.02;
@@ -412,10 +410,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     let hinted: PlaneFit[] = [];
     let extractMask: Uint8Array | undefined;
     if (this.trustPose) {
-      // Gravity-aligned tracked frame (plus the residual tilt correction): a real desk/floor is
-      // within a few degrees of level; a wider cone let a 12-degree fit through desk + laptop base
-      // + shelf (2900 inliers over 3 m) register as "the desk" 7 cm above the real one.
-      hinted = findHorizontalPlanesHinted(points, { ...ransacOpts, maxPlanes: 4, minInliers: tuning.planeMinInliers, maxNormalAngleRad: TRACKED_HORIZONTAL_CONE_RAD });
+      hinted = findHorizontalPlanes(points, { ...ransacOpts, maxPlanes: 4, minInliers: tuning.planeMinInliers });
       if (hinted.length > 0) {
         extractMask = new Uint8Array(pointCount).fill(1);
         for (const fit of hinted) for (const idx of fit.inliers) extractMask[idx] = 0;
