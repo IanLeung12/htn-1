@@ -27,8 +27,9 @@ test('quality tier is reachable and can be forced (safety fallback path)', async
 });
 
 test('renders at least 120 frames with no uncaught exceptions', async ({ evalApp }) => {
+  test.setTimeout(90_000); // software GL under load can run near 5 fps
   await expect
-    .poll(async () => evalApp(() => window.__realityEditor!.perf.stats('frameMs').count), { timeout: 15_000 })
+    .poll(async () => evalApp(() => window.__realityEditor!.perf.stats('frameMs').count), { timeout: 45_000 })
     .toBeGreaterThanOrEqual(120);
 
   const frameStats = await evalApp(() => window.__sim!.frameStats());
