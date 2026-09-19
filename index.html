@@ -5,11 +5,107 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>Reality Editor</title>
     <meta name="description" content="Live mixed-reality room editor for the Meta Quest 3 browser (WebXR immersive-ar)." />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#0b0b0d" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <style>
-      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+      :root {
+        color-scheme: dark;
+        --bg: #0b0b0d;
+        --card-bg: #16161a;
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #f2f2f5;
+        --text-dim: #9a9aa4;
+        --accent: #5b9dff;
+        --accent-text: #06101f;
+      }
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: var(--bg); overflow: hidden; }
+      body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); }
       #app { position: fixed; inset: 0; }
+
+      #landing {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        background: radial-gradient(120% 120% at 50% 20%, #1a1a20 0%, var(--bg) 70%);
+      }
+      #landing.hidden { display: none; }
+      .card {
+        width: 100%;
+        max-width: 380px;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 28px 24px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        text-align: center;
+      }
+      .card h1 {
+        margin: 0 0 8px;
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .card p.tagline {
+        margin: 0 0 20px;
+        color: var(--text-dim);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      #enter-ar {
+        display: block;
+        width: 100%;
+        padding: 14px 18px;
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--accent-text);
+        background: var(--accent);
+        border: none;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      #enter-ar:active { transform: translateY(1px); }
+      #enter-ar:disabled { opacity: 0.5; cursor: default; }
+
+      .caps {
+        margin: 20px 0 0;
+        padding: 12px 14px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        text-align: left;
+      }
+      .caps h2 {
+        margin: 0 0 8px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
+      }
+      .caps ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: var(--text-dim);
+        word-break: break-word;
+      }
+
+      .sim-link {
+        display: inline-block;
+        margin-top: 16px;
+        font-size: 12.5px;
+        color: var(--text-dim);
+        text-decoration: none;
+        border-bottom: 1px dotted currentColor;
+      }
+      .sim-link:hover { color: var(--text); }
     </style>
   </head>
   <body>
@@ -18,9 +114,57 @@
       immersive-ar mode). Please enable JavaScript to continue.
     </noscript>
     <div id="app"></div>
+
+    <div id="landing">
+      <div class="card">
+        <h1>Reality Editor</h1>
+        <p class="tagline">Edit your room in place - capture, move, and clean up real objects with your hands, right where they sit.</p>
+        <button id="enter-ar" disabled>Enter AR</button>
+        <div class="caps">
+          <h2>What works on your device</h2>
+          <ul id="caps-list"><li>Checking…</li></ul>
+        </div>
+        <a class="sim-link" href="/sim.html">No headset? Try the simulator →</a>
+      </div>
+    </div>
+
     <script type="module">
       import { startApp } from '/src/app/entry.ts';
-      startApp({ container: document.getElementById('app'), persistKey: 'reality-editor' });
+      import { getLandingDiagnosticLines } from '/src/render/diagnostics.ts';
+
+      const landing = document.getElementById('landing');
+      const enterArButton = document.getElementById('enter-ar');
+      const capsList = document.getElementById('caps-list');
+
+      getLandingDiagnosticLines(6).then((lines) => {
+        capsList.replaceChildren(...lines.map((line) => {
+          const li = document.createElement('li');
+          li.textContent = line;
+          return li;
+        }));
+      });
+
+      const handlePromise = startApp({ container: document.getElementById('app'), persistKey: 'reality-editor' });
+
+      handlePromise.then((handle) => {
+        enterArButton.disabled = false;
+        enterArButton.addEventListener('click', async () => {
+          enterArButton.disabled = true;
+          enterArButton.textContent = 'Entering…';
+          try {
+            // Same action the DomHud dev panel's own "Enter AR" button
+            // invokes (see src/render/hud.ts's data-action="enter-ar" hook) -
+            // called directly here since this script already holds the
+            // AppHandle it wraps.
+            await handle.enterAR();
+            landing.classList.add('hidden');
+          } catch (err) {
+            console.error('[landing] enterAR() failed', err);
+            enterArButton.disabled = false;
+            enterArButton.textContent = 'Enter AR';
+          }
+        });
+      });
     </script>
   </body>
 </html>

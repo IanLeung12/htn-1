@@ -136,6 +136,48 @@ export async function tryUpdateTargetFrameRate(
   }
 }
 
+/**
+ * Landing-page mirror of `buildLines()`: a lightweight, dependency-free
+ * capability summary for a "what works on your device" list shown before
+ * `startApp()`/`AppHandle` exist (see index.html and src/sim/entry.ts's
+ * landing card). Reuses the exact same line-formatting as the full
+ * diagnostics panel so the two never drift apart, but only fills in the
+ * fields answerable synchronously/from `navigator.xr` alone - everything
+ * that depends on an active session renders as "not started"/"—", matching
+ * `buildLines()`'s own behaviour before a session exists.
+ */
+export async function getLandingDiagnosticLines(maxLines = 6): Promise<string[]> {
+  const xrPresent = typeof navigator !== 'undefined' && 'xr' in navigator;
+  let arSupported: boolean | null = null;
+  if (xrPresent) {
+    try {
+      arSupported = await (navigator as unknown as { xr: XRSystem }).xr.isSessionSupported('immersive-ar');
+    } catch {
+      arSupported = false;
+    }
+  }
+  const state: DiagnosticsState = {
+    xrPresent,
+    arSupported,
+    inSession: false,
+    featureReport: null,
+    referenceSpaceType: null,
+    frameRate: null,
+    supportedFrameRates: null,
+    targetFrameRateRequest: 'not-attempted',
+    handTrackingAvailable: false,
+    planeCount: 0,
+    meshCount: 0,
+    depthAgeMs: Infinity,
+    qualityTier: 0 as QualityTier,
+    perfP50: 0,
+    perfP95: 0,
+    perfP99: 0,
+    qualityHistory: [],
+  };
+  return buildLines(state).slice(0, maxLines);
+}
+
 export function createDiagnostics(): Diagnostics {
   let root: HTMLDivElement | null = null;
   let pre: HTMLPreElement | null = null;

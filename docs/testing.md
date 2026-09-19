@@ -124,6 +124,27 @@ the same document.
 - **`persistence.spec.ts`**: with a `persistKey`, spawns an object, waits out
   `autoPersist`'s 250ms debounce, reloads the page (fresh `XRDevice`, fresh app instance),
   and confirms the object rehydrates from `localStorage`.
+- **`screenshots.spec.ts`**: not an assertion-driven spec - a visual smoke test that drives
+  the simulator through a sequence of states and writes PNGs to `test-results/screens/` for
+  human review (see `docs/ui.md` for what "good" looks like):
+  - `01-live-overlay.png` - passthrough + the in-XR HUD strip, mode `live`.
+  - `02-spawned-settled.png` - three physics-settled spawned cubes, mode `live`.
+  - `03-captured-shell.png` - after `setMode('captured-shell')`, room-mode glyph filled.
+  - `04-table-before-delete.png` / `05-table-deleted.png` - a captured table, tier A, before
+    and after `delete` (clean-plate reveal).
+  - `06-hand-menu.png` - the left hand raised in front of the head with its palm turned
+    toward it (`window.__sim.hand('left').setPose(...)` + `.moveTo(...)`), showing the
+    palm-up hand menu (`src/render/hand-menu.ts`). The rotation used here isn't an arbitrary
+    guess: IWER's `relaxedHandPose` (the hand's rest pose) bakes a real rotation into the
+    wrist joint's local offset, so both the palm-facing check (`src/xr/input.ts`'s
+    `palmNormal`, a cross product of the index/pinky metacarpal joints) and the menu quads'
+    own facing (they inherit `wristQuaternion` directly) are non-trivial functions of the
+    hand root quaternion set via `setPose`. A small offline search over
+    `node_modules/iwer/lib/device/configs/hand/relaxed.js`'s wrist transform (see
+    `docs/ui.md`) found a single rotation, -66 degrees about world +X, that scores well on
+    both at once (palm-toward-head dot ~0.77, button-quads-toward-camera dot ~0.78) - a
+    different pick for either constraint alone (e.g. -90 degrees, dot 0.96) leaves the
+    button quads viewed almost edge-on and effectively invisible.
 
 ## Key IWER facts discovered while building this (see `src/sim/bootstrap.ts` header for the
 full writeup with citations to the exact `.d.ts`/`.js` files)

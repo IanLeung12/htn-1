@@ -1,16 +1,18 @@
 /**
  * Palm-up hand menu, attached to the left hand's wrist joint, plus a small
  * MicButton. Both are canvas-textured three.js quads (cheap, consistent with
- * src/render/hud.ts).
+ * src/render/hud.ts), sharing its font and rounded-corner look.
  *
  * The menu shows only while the left palm faces the head
- * (dot(palmNormal, toHead) > 0.6) and is selected either by poking within
- * ~2cm with the right index tip, or by pinching while the right hand's ray
- * hits a button. `update()` runs every rendered frame and only touches
- * pre-allocated temporaries - no per-frame allocation.
+ * (dot(palmNormal, toHead) > 0.6). Buttons highlight when the right index
+ * tip is within 4cm (hover) and show press feedback when poking within
+ * ~2cm or pinching while the right hand's ray hits a button. `update()` runs
+ * every rendered frame and only touches pre-allocated temporaries - no
+ * per-frame allocation.
  */
 import * as THREE from 'three';
 import type { HandState, InputState } from '@/xr/input';
+import { HUD_DISTANCE_M, HUD_WIDTH_M, HUD_VERTICAL_OFFSET_M } from '@/render/hud';
 
 export type HandMenuAction =
   | 'delete'
@@ -37,18 +39,33 @@ const BUTTONS: ButtonDef[] = [
 ];
 
 const PALM_DOT_THRESHOLD = 0.6;
-const POKE_DIST_M = 0.02;
-const BUTTON_W = 0.045;
-const BUTTON_H = 0.02;
-const GAP = 0.006;
+const HOVER_DIST_M = 0.04;
+const PRESS_DIST_M = 0.02;
+const BUTTON_W = 0.05;
+const BUTTON_H = 0.024;
+const GAP = 0.03;
+const CORNER_RADIUS_PX = 10;
 const COLUMNS = 2;
+const FONT = '600 22px system-ui, -apple-system, "Segoe UI", sans-serif';
+
+type ButtonVisualState = 'idle' | 'hover' | 'pressed';
 
 interface ButtonEntry {
   def: ButtonDef;
   mesh: THREE.Mesh;
   ctx: CanvasRenderingContext2D;
   texture: THREE.CanvasTexture;
-  pressed: boolean;
+  state: ButtonVisualState;
+}
+
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 export class HandMenu {
@@ -81,8 +98,8 @@ export class HandMenu {
       mesh.position.set((col - (COLUMNS - 1) / 2) * (BUTTON_W + GAP), -row * (BUTTON_H + GAP), 0);
       this.group.add(mesh);
 
-      const entry: ButtonEntry = { def, mesh, ctx, texture, pressed: false };
-      this.drawButton(entry, false);
+      const entry: ButtonEntry = { def, mesh, ctx, texture, state: 'idle' };
+      this.drawButton(entry);
       this.buttons.push(entry);
     });
 
@@ -91,17 +108,24 @@ export class HandMenu {
     this.group.visible = false;
   }
 
-  private drawButton(entry: ButtonEntry, active: boolean): void {
+  private drawButton(entry: ButtonEntry): void {
     const { ctx } = entry;
     const { width, height } = ctx.canvas;
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = active ? 'rgba(70,150,255,0.92)' : 'rgba(20,20,20,0.78)';
-    ctx.fillRect(0, 0, width, height);
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    const bg =
+      entry.state === 'pressed'
+        ? 'rgba(70,150,255,0.95)'
+        : entry.state === 'hover'
+          ? 'rgba(60,110,180,0.85)'
+          : 'rgba(20,20,20,0.72)';
+    roundRectPath(ctx, 2, 2, width - 4, height - 4, CORNER_RADIUS_PX);
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, width - 2, height - 2);
+    ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.font = '22px sans-serif';
+    ctx.font = FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(entry.def.label, width / 2, height / 2);
@@ -146,7 +170,7 @@ export class HandMenu {
 
   private updateSelection(right: HandState): void {
     if (!right.active) {
-      for (const btn of this.buttons) this.setPressed(btn, false);
+      for (const btn of this.buttons) this.setState(btn, 'idle');
       return;
     }
 
@@ -155,9 +179,10 @@ export class HandMenu {
     for (const btn of this.buttons) {
       btn.mesh.getWorldPosition(this.tmpButtonWorldPos);
       this.tmpDelta.copy(right.position).sub(this.tmpButtonWorldPos);
-      const poking = this.tmpDelta.length() < POKE_DIST_M;
+      const dist = this.tmpDelta.length();
       const pinchHit = pinchRayActive && this.rayHitsButton(right, btn.mesh);
-      this.setPressed(btn, poking || pinchHit);
+      const state: ButtonVisualState = dist < PRESS_DIST_M || pinchHit ? 'pressed' : dist < HOVER_DIST_M ? 'hover' : 'idle';
+      this.setState(btn, state);
     }
   }
 
@@ -166,11 +191,12 @@ export class HandMenu {
     return this.raycaster.intersectObject(mesh, false).length > 0;
   }
 
-  private setPressed(entry: ButtonEntry, pressed: boolean): void {
-    if (entry.pressed === pressed) return;
-    entry.pressed = pressed;
-    this.drawButton(entry, pressed);
-    if (pressed) this.emit(entry.def.action);
+  private setState(entry: ButtonEntry, state: ButtonVisualState): void {
+    if (entry.state === state) return;
+    const wasPressed = entry.state === 'pressed';
+    entry.state = state;
+    this.drawButton(entry);
+    if (state === 'pressed' && !wasPressed) this.emit(entry.def.action);
   }
 
   dispose(): void {
@@ -183,9 +209,20 @@ export class HandMenu {
   }
 }
 
-const MIC_SIZE = 0.045;
+const MIC_SIZE = 0.032;
+/** Inset from the strip's right/bottom edges so the glyph sits inside it
+ * rather than on the border. */
+const MIC_MARGIN_M = 0.02;
 
-/** Small camera-attached mic toggle button with a visual listening state. */
+/**
+ * Small camera-attached mic toggle glyph, positioned at the right end of the
+ * in-XR HUD strip (src/render/hud.ts) so it reads as part of the same
+ * instrument, not a floating button in the middle of the view.
+ *
+ * `voice-install.ts` calls `attachTo(camera)` once per frame (it has no
+ * reference to InXRHud) - this computes the strip-relative offset itself
+ * from the shared HUD_* constants, so no cross-module wiring is needed.
+ */
 export class MicButton {
   readonly mesh: THREE.Mesh;
   private readonly canvas = document.createElement('canvas');
@@ -212,17 +249,32 @@ export class MicButton {
     const { width, height } = this.canvas;
     ctx.clearRect(0, 0, width, height);
     ctx.beginPath();
-    ctx.arc(width / 2, height / 2, width / 2 - 3, 0, Math.PI * 2);
-    ctx.fillStyle = this.listeningState ? 'rgba(255,70,70,0.92)' : 'rgba(50,50,50,0.85)';
+    ctx.arc(width / 2, height / 2, width / 2 - 4, 0, Math.PI * 2);
+    ctx.fillStyle = this.listeningState ? 'rgba(255,80,80,0.95)' : 'rgba(20,20,24,0.55)';
     ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = this.listeningState ? '#ffdede' : 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = this.listeningState ? 3 : 2;
     ctx.stroke();
+
+    // Simple mic glyph (capsule + stand) rather than a text label, to read as
+    // an icon at HUD scale.
+    const cx = width / 2;
+    const capsuleTop = height * 0.28;
+    const capsuleH = height * 0.32;
+    const capsuleW = width * 0.22;
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('MIC', width / 2, height / 2);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(cx - capsuleW / 2, capsuleTop, capsuleW, capsuleH, capsuleW / 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, capsuleTop + capsuleH * 0.65, capsuleW * 1.05, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, capsuleTop + capsuleH * 0.65 + capsuleW * 1.05 * 0.55);
+    ctx.lineTo(cx, height * 0.78);
+    ctx.stroke();
     this.texture.needsUpdate = true;
   }
 
@@ -245,9 +297,13 @@ export class MicButton {
     for (const cb of this.callbacks) cb();
   }
 
-  /** Position bottom-right of the given camera, mirroring InXRHud's placement. */
+  /**
+   * Position at the right end of the in-XR HUD strip (src/render/hud.ts),
+   * slightly nearer the camera than the strip so it never z-fights with it.
+   */
   attachTo(camera: THREE.Camera): void {
-    const offset = new THREE.Vector3(0.14, -0.09, -0.3);
+    const x = HUD_WIDTH_M / 2 - MIC_MARGIN_M - MIC_SIZE / 2;
+    const offset = new THREE.Vector3(x, HUD_VERTICAL_OFFSET_M, -HUD_DISTANCE_M + 0.002);
     offset.applyQuaternion(camera.quaternion);
     this.mesh.position.copy(camera.position).add(offset);
     this.mesh.quaternion.copy(camera.quaternion);
