@@ -55,7 +55,7 @@ export function createZedSdkBackend(config: Pick<CameraAppConfig, 'bridgeUrl' | 
       if (!c || c.at === lastCorrectionAt) return;
       lastCorrectionAt = c.at;
       poseSource.applyGroundPlane(c.groundY, c.confidence, c.inliers, c.extentM);
-      if (c.normalWorld) poseSource.applyTilt(c.normalWorld, c.confidence, c.inliers, c.extentM);
+      if (c.normalWorld) poseSource.applyTilt(c.normalWorld, c.confidence, c.tiltInliers ?? c.inliers, c.tiltExtentM ?? c.extentM);
     },
     statusLine() {
       const s = client.stats;

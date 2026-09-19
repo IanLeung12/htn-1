@@ -107,8 +107,14 @@ export interface FrameCorrection {
   extentM: number;
   /** World y of the dominant plane in the published frame (0 unless `trustPose`, where it is the plane's height in the pose frame). */
   groundY: number;
-  /** `trustPose` only: the dominant plane's unit normal in the published (pose) frame, pointing up. */
+  /**
+   * `trustPose` only: unit normal (published frame, pointing up) of the largest horizontal plane
+   * in view (the desk/floor with the most inliers), with that plane's inlier count and extent.
+   * The pose source levels a small residual tilt of the tracked frame with it.
+   */
   normalWorld?: Vec3;
+  tiltInliers?: number;
+  tiltExtentM?: number;
   at: Millis;
 }
 /** Horizontal planes higher than this above the ground are ceilings/shelves, not tables. */
@@ -455,6 +461,28 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       newTables.push({ surface, confidence: Math.min(1, fit.inlierFraction * 3), origin: 'ransac' });
       newTrackedTables.push({ id, aabb });
       tableFits.push(fit);
+    }
+
+    // Residual tilt reference (trustPose): the horizontal plane with the most inliers, ground or
+    // table. The bottom-band "ground" fit can be a small noisy patch under a desk-mounted camera.
+    if (this.trustPose) {
+      let best: PlaneFit | null = dominant && dominant.inliers.length >= TRACKED_TABLE_MIN_INLIERS ? dominant : null;
+      let bestNormal: Vec3 | null = best ? normalWorld ?? null : null;
+      for (const fit of tableFits) {
+        if (!best || fit.inliers.length > best.inliers.length) {
+          best = fit;
+          bestNormal = fit.normal.y < 0 ? { x: -fit.normal.x, y: -fit.normal.y, z: -fit.normal.z } : fit.normal; // world space already
+        }
+      }
+      if (best && bestNormal) {
+        const ex = Math.max(best.extentMax.x - best.extentMin.x, best.extentMax.z - best.extentMin.z);
+        if (this.correction && this.correction.at === now) {
+          this.correction = { ...this.correction, normalWorld: bestNormal, tiltInliers: best.inliers.length, tiltExtentM: ex };
+        } else {
+          const c = best.centroid;
+          this.correction = { pitchRad: 0, rollRad: 0, heightM: depth.pose.position.y - c.y, confidence: Math.min(1, best.inlierFraction * 3), inliers: best.inliers.length, rollCorroborated: false, extentM: ex, groundY: c.y, normalWorld: bestNormal, tiltInliers: best.inliers.length, tiltExtentM: ex, at: now };
+        }
+      }
     }
 
     // 4. Wall surfaces.
