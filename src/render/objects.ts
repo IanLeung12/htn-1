@@ -14,7 +14,7 @@ import type { Aabb, EditableObject, ProxyShape, SceneSnapshot } from '@/core/typ
 import type { CameraFrame } from '@/capture/contract';
 import type { FrameStore } from '@/capture/frame-store';
 import { appearanceFrameKey } from '@/capture/frame-store';
-import { createUnlitTextureMaterial, setUnlitMaterialFrame } from './projective';
+import { createUnlitTextureMaterial, setUnlitMaterialFrame, setUnlitClipBox, setUnlitEyePosition, createDepthResetMaterial } from './projective';
 import { getDepthMeshGeometry } from './depth-mesh';
 
 const EPS_POS = 0.005;
@@ -99,7 +99,7 @@ interface Entry {
    */
   appearanceGroup: THREE.Group;
   appearanceStencilMesh: THREE.Mesh;
-  appearanceStencilMaterial: THREE.MeshBasicMaterial;
+  appearanceStencilMaterial: THREE.ShaderMaterial;
   appearanceStencilRef: number;
   /** Built lazily once frames are available; `undefined` until first attempted. */
   appearanceDepthMeshes: Map<CameraFrame, THREE.Mesh | null> | undefined;
@@ -159,6 +159,10 @@ interface PreviewEntry {
 }
 
 export class ObjectViews {
+  /** Head position for the appearance silhouette clip; set by the app each frame. */
+  eyePosition: { x: number; y: number; z: number } | null = null;
+  private readonly clipMin = new THREE.Vector3();
+  private readonly clipMax = new THREE.Vector3();
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, Entry>();
   private readonly appearanceStencilRefs = new StencilRefPool(101);
@@ -245,6 +249,7 @@ export class ObjectViews {
     const wantsAppearance = obj.visible && moved && obj.visual.kind === 'baked' && !!this.frameStore;
     const appearanceActive = wantsAppearance ? this.syncAppearance(entry, obj) : false;
     if (!wantsAppearance) entry.appearanceGroup.visible = false;
+    else this.updateAppearanceClip(entry, obj);
 
     entry.solid.visible = obj.visible && showSolid && !appearanceActive;
     entry.hoverOutline.visible = obj.visible && !showSolid && this.hoveredId === obj.id;
@@ -299,15 +304,12 @@ export class ObjectViews {
     // below only ever paint inside that silhouette, never spilling onto
     // whatever real geometry happens to be nearby at the new location.
     const appearanceStencilRef = this.appearanceStencilRefs.acquire(obj.id);
-    const appearanceStencilMaterial = new THREE.MeshBasicMaterial({
-      colorWrite: false,
-      depthWrite: false,
-      depthTest: true,
-      stencilWrite: true,
-      stencilFunc: THREE.AlwaysStencilFunc,
-      stencilRef: appearanceStencilRef,
-      stencilZPass: THREE.ReplaceStencilOp,
-    });
+    // Depth reset inside the silhouette at the CURRENT pose (see projective.ts).
+    const appearanceStencilMaterial = createDepthResetMaterial();
+    appearanceStencilMaterial.stencilWrite = true;
+    appearanceStencilMaterial.stencilFunc = THREE.AlwaysStencilFunc;
+    appearanceStencilMaterial.stencilRef = appearanceStencilRef;
+    appearanceStencilMaterial.stencilZPass = THREE.ReplaceStencilOp;
     const appearanceStencilMesh = new THREE.Mesh(geometryForProxy(obj.occlusionProxy), appearanceStencilMaterial);
     appearanceStencilMesh.name = `object-appearance-stencil:${obj.id}`;
     appearanceStencilMesh.renderOrder = RENDER_ORDER_APPEARANCE_STENCIL;
@@ -389,9 +391,8 @@ export class ObjectViews {
         // currentPose . originalPose^-1 the spec calls for.
         const localGeometry = worldGeometry.clone().applyMatrix4(invOriginal);
         const material = createUnlitTextureMaterial();
-        material.stencilWrite = true;
-        material.stencilFunc = THREE.EqualStencilFunc;
-        material.stencilRef = entry.appearanceStencilRef;
+        // Silhouette clip happens in the shader (projective.ts); the box uniform is
+        // refreshed every frame from the CURRENT pose in updateAppearanceClip().
         setUnlitMaterialFrame(material, frame);
         const mesh = new THREE.Mesh(localGeometry, material);
         mesh.name = `object-appearance-depth:${obj.id}:${frame.timestamp}`;
@@ -469,6 +470,25 @@ export class ObjectViews {
     this.previewEntry.mesh.geometry.dispose();
     (this.previewEntry.mesh.material as THREE.Material).dispose();
     this.previewEntry = null;
+  }
+
+  /** Keep each appearance mesh clipped to the occlusion box at the object's current pose. */
+  private updateAppearanceClip(entry: Entry, obj: EditableObject): void {
+    const p = obj.currentPose.position;
+    const proxy = obj.occlusionProxy;
+    const hx = proxy.kind === 'box' ? proxy.halfExtents.x : proxy.radius;
+    const hy = proxy.kind === 'box' ? proxy.halfExtents.y : proxy.kind === 'sphere' ? proxy.radius : proxy.halfHeight + proxy.radius;
+    const hz = proxy.kind === 'box' ? proxy.halfExtents.z : proxy.radius;
+    const pad = 0.02;
+    this.clipMin.set(p.x - hx - pad, p.y - hy - pad, p.z - hz - pad);
+    this.clipMax.set(p.x + hx + pad, p.y + hy + pad, p.z + hz + pad);
+    for (const child of entry.appearanceGroup.children) {
+      const mat = (child as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+      if (mat && mat.uniforms && mat.uniforms.uClipMin) {
+        setUnlitClipBox(mat, this.clipMin, this.clipMax);
+        if (this.eyePosition) setUnlitEyePosition(mat, this.eyePosition);
+      }
+    }
   }
 
   dispose(): void {

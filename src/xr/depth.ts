@@ -70,7 +70,12 @@ export class DepthOcclusion {
     try {
       const mesh = this.renderer.xr.getDepthSensingMesh();
       if (mesh) {
-        mesh.renderOrder = 1;
+        // 1.5: after the static shell (0) AND after captured content that replaces
+        // static real surfaces (background hulls, plates, moved-object appearance at
+        // renderOrder 1), but before spawned/editable objects (2). This is the
+        // static-shell exclusion gate: environment depth of the very furniture a hull
+        // replaces must not punch through it, while hands/people still occlude objects.
+        mesh.renderOrder = 1.5;
         // Fullscreen quad drawn in clip space directly by three's occlusion
         // shader (see WebXRDepthSensing.js) rather than via the object's
         // transform, so its (identity, world-origin) bounding sphere is

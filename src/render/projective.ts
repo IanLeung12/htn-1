@@ -111,16 +111,42 @@ export function setMaterialFrame(material: THREE.ShaderMaterial, frame: CameraFr
 
 const UNLIT_VERTEX_SHADER = `
 varying vec2 vUv;
+varying vec3 vWorldPos;
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorldPos = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `;
 
+// Silhouette clip without the stencil buffer: a fragment survives only when the
+// segment from the camera to the fragment passes through the clip box, i.e. the
+// fragment lies inside the box's silhouette as seen from the current eye. This
+// works on any framebuffer (some XR layers expose no stencil bits) and per eye.
 const UNLIT_FRAGMENT_SHADER = `
 uniform sampler2D uMap;
+uniform vec3 uClipMin;
+uniform vec3 uClipMax;
+uniform float uClipEnabled;
+uniform vec3 uEyePos;
 varying vec2 vUv;
+varying vec3 vWorldPos;
 void main() {
+  if (uClipEnabled > 0.5) {
+    // Eye position comes from the app's head pose (uEyePos), not three's
+    // cameraPosition, which is not reliable inside XR array cameras.
+    vec3 d = vWorldPos - uEyePos;
+    d = sign(d) * max(abs(d), vec3(1e-6));
+    vec3 invD = 1.0 / d;
+    vec3 t0 = (uClipMin - uEyePos) * invD;
+    vec3 t1 = (uClipMax - uEyePos) * invD;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    float tEnter = max(max(tmin.x, tmin.y), tmin.z);
+    float tExit = min(min(tmax.x, tmax.y), tmax.z);
+    if (tEnter > tExit || tExit < 0.0 || tEnter > 1.0) discard;
+  }
   gl_FragColor = texture2D(uMap, vUv);
 }
 `;
@@ -128,7 +154,13 @@ void main() {
 /** Unlit material that samples a captured frame's texture directly via vertex UVs. */
 export function createUnlitTextureMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { uMap: { value: null } },
+    uniforms: {
+      uMap: { value: null },
+      uClipMin: { value: new THREE.Vector3(-1e9, -1e9, -1e9) },
+      uClipMax: { value: new THREE.Vector3(1e9, 1e9, 1e9) },
+      uClipEnabled: { value: 0 },
+      uEyePos: { value: new THREE.Vector3() },
+    },
     vertexShader: UNLIT_VERTEX_SHADER,
     fragmentShader: UNLIT_FRAGMENT_SHADER,
     side: THREE.FrontSide,
@@ -137,7 +169,64 @@ export function createUnlitTextureMaterial(): THREE.ShaderMaterial {
   });
 }
 
+/** Update the eye position used by the silhouette clip (call once per frame per material). */
+export function setUnlitEyePosition(material: THREE.ShaderMaterial, eye: { x: number; y: number; z: number }): void {
+  (material.uniforms.uEyePos!.value as THREE.Vector3).set(eye.x, eye.y, eye.z);
+}
+
+/** Restrict an unlit material to the silhouette of a world-space axis-aligned box. */
+export function setUnlitClipBox(material: THREE.ShaderMaterial, min: { x: number; y: number; z: number }, max: { x: number; y: number; z: number }): void {
+  (material.uniforms.uClipMin!.value as THREE.Vector3).set(min.x, min.y, min.z);
+  (material.uniforms.uClipMax!.value as THREE.Vector3).set(max.x, max.y, max.z);
+  material.uniforms.uClipEnabled!.value = 1;
+}
+
 /** Point an unlit direct-UV material at a captured frame's texture. */
 export function setUnlitMaterialFrame(material: THREE.ShaderMaterial, frame: CameraFrame): void {
   material.uniforms.uMap!.value = getFrameTexture(frame);
+}
+
+// ---------------------------------------------------------------------------
+// Depth reset box.
+//
+// three.js draws the WebXR depth-sensing occlusion mesh with group order
+// -Infinity (see WebGLRenderer.render), i.e. before everything and regardless of
+// renderOrder. Its real-scene depth therefore blocks any captured content that
+// replaces a real surface (background hulls, plates, moved-object appearance),
+// because those fragments lie at or behind the physical object they replace.
+// This material is drawn on the object's occlusion box (renderOrder 0.5): it
+// writes no colour and forces depth to the far plane inside the box's screen
+// silhouette, so the captured content drawn next (renderOrder 1) passes the depth
+// test while spawned/editable objects (renderOrder 2) still test against it.
+// Limitation: a real hand/person crossing inside that silhouette is not seen by
+// the depth test there; refining this needs the depth texture sampled in the
+// captured-content shader (compare environment depth with the box entry depth).
+// ---------------------------------------------------------------------------
+
+const DEPTH_RESET_VERTEX_SHADER = `
+void main() {
+  vec4 clip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  // Push to the far plane (just inside it so the fragment is not clipped).
+  clip.z = clip.w * 0.999999;
+  gl_Position = clip;
+}
+`;
+
+const DEPTH_RESET_FRAGMENT_SHADER = `
+void main() {
+  gl_FragColor = vec4(0.0);
+}
+`;
+
+/** Colourless box material that resets depth to far inside its silhouette. */
+export function createDepthResetMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: DEPTH_RESET_VERTEX_SHADER,
+    fragmentShader: DEPTH_RESET_FRAGMENT_SHADER,
+    colorWrite: false,
+    depthWrite: true,
+    depthTest: true,
+    depthFunc: THREE.AlwaysDepth,
+    side: THREE.DoubleSide,
+  });
 }

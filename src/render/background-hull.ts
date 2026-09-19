@@ -43,7 +43,7 @@ import type { CameraFrame } from '@/capture/contract';
 import type { FrameStore } from '@/capture/frame-store';
 import { distance } from '@/core/math';
 import { insideEnvelope } from './plates';
-import { createProjectiveMaterial, setMaterialFrame, createUnlitTextureMaterial, setUnlitMaterialFrame } from './projective';
+import { createProjectiveMaterial, setMaterialFrame, createUnlitTextureMaterial, setUnlitMaterialFrame, setUnlitClipBox, setUnlitEyePosition, createDepthResetMaterial } from './projective';
 import { getDepthMeshGeometry } from './depth-mesh';
 
 const RESELECT_DISTANCE_M = 0.1;
@@ -71,6 +71,23 @@ function shouldHide(obj: EditableObject): boolean {
   const a = obj.originalPose.position;
   const b = obj.currentPose.position;
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) > 0.005;
+}
+
+/** World-space AABB of the object's occlusion proxy at its ORIGINAL pose (proxies are axis-aligned). */
+function clipBoxFor(obj: EditableObject): { min: Vec3; max: Vec3 } {
+  const p = obj.originalPose.position;
+  const proxy = obj.occlusionProxy;
+  const he =
+    proxy.kind === 'box'
+      ? proxy.halfExtents
+      : proxy.kind === 'sphere'
+        ? { x: proxy.radius, y: proxy.radius, z: proxy.radius }
+        : { x: proxy.radius, y: proxy.halfHeight + proxy.radius, z: proxy.radius };
+  const pad = 0.02;
+  return {
+    min: { x: p.x - he.x - pad, y: p.y - he.y - pad, z: p.z - he.z - pad },
+    max: { x: p.x + he.x + pad, y: p.y + he.y + pad, z: p.z + he.z + pad },
+  };
 }
 
 /** Allocates small stable integers (1..255) for stencil refs, reused once freed. */
@@ -103,7 +120,7 @@ interface FrameMesh {
 interface HullEntry {
   /** Invisible: stamps the object's silhouette into the stencil buffer at its original pose. */
   stencilMesh: THREE.Mesh;
-  stencilMaterial: THREE.MeshBasicMaterial;
+  stencilMaterial: THREE.ShaderMaterial;
   /**
    * One parallax-correct textured depth mesh per captured frame that has
    * depth, all drawn simultaneously (stencil-clipped, normal GL depth test
@@ -172,15 +189,13 @@ export class BackgroundHull {
     const stencilRef = this.stencilRefs.acquire(obj.id);
 
     const stencilGeometry = geometryForProxy(obj);
-    const stencilMaterial = new THREE.MeshBasicMaterial({
-      colorWrite: false,
-      depthWrite: false,
-      depthTest: true,
-      stencilWrite: true,
-      stencilFunc: THREE.AlwaysStencilFunc,
-      stencilRef,
-      stencilZPass: THREE.ReplaceStencilOp,
-    });
+    // Depth reset (see projective.ts createDepthResetMaterial): clears the
+    // environment/static depth inside the silhouette so the hull can draw.
+    const stencilMaterial = createDepthResetMaterial();
+    stencilMaterial.stencilWrite = true;
+    stencilMaterial.stencilFunc = THREE.AlwaysStencilFunc;
+    stencilMaterial.stencilRef = stencilRef;
+    stencilMaterial.stencilZPass = THREE.ReplaceStencilOp;
     const stencilMesh = new THREE.Mesh(stencilGeometry, stencilMaterial);
     stencilMesh.name = `background-hull-stencil:${obj.id}`;
     stencilMesh.renderOrder = RENDER_ORDER_STENCIL_BOX;
@@ -214,7 +229,7 @@ export class BackgroundHull {
   }
 
   /** Lazily build (and cache) this entry's depth-mesh Mesh for one captured frame. */
-  private getOrBuildFrameMesh(entry: HullEntry, frame: CameraFrame): FrameMesh | null {
+  private getOrBuildFrameMesh(entry: HullEntry, frame: CameraFrame, obj: EditableObject): FrameMesh | null {
     const cached = entry.depthMeshes.get(frame);
     if (cached !== undefined) return cached;
 
@@ -225,12 +240,13 @@ export class BackgroundHull {
     }
 
     const material = createUnlitTextureMaterial();
-    material.stencilWrite = true;
-    material.stencilFunc = THREE.EqualStencilFunc;
-    material.stencilRef = entry.stencilRef;
+    // Silhouette clip is done in the shader (see projective.ts): the stencil path is
+    // kept as a no-op fallback because some XR framebuffers expose no stencil bits.
     material.depthWrite = true;
     material.depthTest = true;
     setUnlitMaterialFrame(material, frame);
+    const clip = clipBoxFor(obj);
+    setUnlitClipBox(material, clip.min, clip.max);
 
     // Depth-mesh geometry vertices are already in world space (unprojected
     // per-pixel, see render/depth-mesh.ts), so the mesh itself stays at the
@@ -273,9 +289,10 @@ export class BackgroundHull {
     // of what's behind the object from its own capture angle.
     let anyDepthMesh = false;
     for (const frame of frames) {
-      const fm = this.getOrBuildFrameMesh(entry, frame);
+      const fm = this.getOrBuildFrameMesh(entry, frame, obj);
       if (fm) {
         fm.mesh.visible = true;
+        setUnlitEyePosition(fm.mesh.material as THREE.ShaderMaterial, headPose.position);
         anyDepthMesh = true;
       }
     }

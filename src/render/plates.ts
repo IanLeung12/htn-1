@@ -103,6 +103,7 @@ export class PlateRenderer {
       // Unlit: the plate is a photo of the background with lighting already baked in.
       const material = new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide });
       const mesh = new THREE.Mesh(geometry, material);
+      mesh.renderOrder = 1; // after the hull depth reset (0.5), before objects (2)
       const outline = new THREE.LineSegments(
         new THREE.EdgesGeometry(geometry),
         new THREE.LineDashedMaterial({ color: 0x888888, dashSize: 0.02, gapSize: 0.02 }),

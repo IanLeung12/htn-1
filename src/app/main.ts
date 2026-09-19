@@ -582,6 +582,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     regionManager.tick(cond, committed.mode, quality.decision, obstructionPoints);
 
     const frameSnapshot = store.current;
+    views.eyePosition = cond.headPose.position;
     views.update(frameSnapshot);
     views.updatePreview(frameSnapshot, previewGroup);
     plates.update(frameSnapshot, cond.headPose);
@@ -753,6 +754,8 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   };
 
   window.__realityEditor = handle;
+  // Debug hook for manual simulator sessions (not part of the contract).
+  (window as unknown as { __realityEditorDebug?: unknown }).__realityEditorDebug = { scene, backgroundHull, shell, views, frameStore };
   void nearestObjects;
   return handle;
 };
