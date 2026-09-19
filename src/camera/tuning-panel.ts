@@ -12,9 +12,10 @@ const GROUP_LABELS: Record<string, string> = {
   depth: 'Depth',
   planes: 'Planes',
   volumes: 'Volumes',
+  occlusion: 'Occlusion',
 };
 
-const GROUP_ORDER: readonly (keyof typeof GROUP_LABELS)[] = ['camera', 'depth', 'planes', 'volumes'];
+const GROUP_ORDER: readonly (keyof typeof GROUP_LABELS)[] = ['camera', 'depth', 'planes', 'volumes', 'occlusion'];
 
 interface RowControls {
   range: HTMLInputElement;

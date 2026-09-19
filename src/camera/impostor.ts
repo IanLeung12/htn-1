@@ -383,6 +383,11 @@ export class ImpostorViews {
       alphaTest: 0.5,
       side: THREE.DoubleSide,
       depthWrite: true,
+      // See the matching comment in edit/eraser.ts: a camera-facing overlay
+      // drawn after the live-depth occluder (renderOrder 2 vs -1) that
+      // stands at the real object's own depth, which the occluder's
+      // biased-back depth (or plain estimator noise) could otherwise hide.
+      depthTest: false,
     });
     const geometry = new THREE.PlaneGeometry(1, 1);
     const mesh = new THREE.Mesh(geometry, material);

@@ -150,7 +150,16 @@ export class StaticCameraEraser {
       transparent: true,
       alphaTest: 0.5,
       side: THREE.DoubleSide,
-      depthTest: true,
+      // The live-depth occlusion quad (src/camera/depth-occluder.ts) draws
+      // first and writes the REAL scene's depth pushed back a couple of
+      // centimetres (occluderBiasM) so things resting AT that depth win
+      // reliably; this patch instead sits exactly at the erased object's own
+      // real depth (it composites the clean-plate frame's own pixels there),
+      // which estimator noise could put on the wrong side of that bias. It's
+      // a camera-facing overlay drawn after the occluder (renderOrder 2 vs
+      // -1), so skip the depth test rather than risk being hidden by the
+      // very surface it's meant to replace.
+      depthTest: false,
       depthWrite: true,
     });
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);

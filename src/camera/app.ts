@@ -67,6 +67,7 @@ import { StaticPoseSource } from './pose/static';
 import type { VisualPoseSource } from './pose/visual';
 import { ModelDepthEstimator } from './depth/model';
 import { TuningStore, type CameraTuning } from './tuning';
+import { DepthOccluder } from './depth-occluder';
 import { TuningPanel } from './tuning-panel';
 import { synthesizeSupportPlate, tierForSyntheticPlate } from './synthetic-plate';
 import { footprintFromProxy } from '@/capture';
@@ -146,6 +147,8 @@ export interface CameraHandle {
   calibrateNearFar(ndcNear: { x: number; y: number }, mNear: number, ndcFar: { x: number; y: number }, mFar: number): boolean;
   /** Forget the two-point anchors (back to the ground-plane fit). */
   clearAnchors(): void;
+  /** Live-depth occlusion state (see depth-occluder.ts), for tests/diagnostics. `o` toggles it. */
+  readonly occluder: { enabled: boolean; lastUploadTs: number; textureWidth: number; textureHeight: number };
 }
 
 export interface CameraApp {
@@ -339,6 +342,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   scene.add(dirLight);
 
   const frameStore = createFrameStore();
+  // Live-depth occlusion: spawned/virtual objects hide behind real ones (see
+  // depth-occluder.ts's module doc for the render-order rationale). Added
+  // first so its renderOrder (-1) is unambiguous relative to everything
+  // else, though three sorts by renderOrder regardless of add order.
+  const depthOccluder = new DepthOccluder();
+  scene.add(depthOccluder.mesh);
   const views = new ObjectViews(frameStore);
   scene.add(views.group);
   const previewGroup = new THREE.Group();
@@ -657,6 +666,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     debugOverlay.setVisible(!debugOverlay.group.visible);
   };
   window.addEventListener('keydown', onOverlayKey);
+  const onOccluderKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'o' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+    tuning.set('occluderEnabled', tuning.value.occluderEnabled >= 1 ? 0 : 1);
+  };
+  window.addEventListener('keydown', onOccluderKey);
   function workflowHint(): string {
     if (transientHint) {
       if (performance.now() < transientHint.expiresAt) return transientHint.text;
@@ -675,7 +691,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     const real = Object.values(snap.objects).filter((o) => o.origin === 'physical').length;
     if (real === 0 && surfaceEstimator.volumes.length > 0) return `${surfaceEstimator.volumes.length} real object(s) seen: press Discover to make them editable.`;
     if (real === 0) return 'Spawn a cube, or point the camera at objects on a table/floor and press Discover.';
-    return 'Click an object to select it; drag to move. d: diagnostics, t: tuning, v: scene wireframes.';
+    return 'Click an object to select it; drag to move. d: diagnostics, t: tuning, v: scene wireframes, o: depth occlusion.';
   }
   const tuningPanel = new TuningPanel(container, tuning, { visible: false });
   let lastDiagAt = -Infinity;
@@ -1264,6 +1280,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
 
     shell.update(frameSnapshot, []);
     guideOverlay.update(guide, 0);
+    depthOccluder.update(depthEstimator.latest, now, tuning.value.occluderEnabled >= 1, tuning.value.occluderBiasM);
 
     // Video fps estimate for diagnostics.
     if (frameSource.lastFrameAt !== lastVideoFrameAt) {
@@ -1421,8 +1438,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       hintEl.remove();
       window.removeEventListener('keydown', onCalibrateKey);
       window.removeEventListener('keydown', onOverlayKey);
+      window.removeEventListener('keydown', onOccluderKey);
       debugOverlay.dispose();
       impostors.dispose();
+      depthOccluder.dispose();
       disposeRenderer();
       video.remove();
       if (window.__realityEditor === handle) delete window.__realityEditor;
@@ -1496,6 +1515,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     },
     clearAnchors() {
       tuning.patch({ anchorNearM: 0, anchorFarM: 0 });
+    },
+    get occluder() {
+      return { ...depthOccluder.state };
     },
     calibrateAt(ndcX, ndcY, distanceM) {
       const map = depthEstimator.latest;
