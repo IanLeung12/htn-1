@@ -61,20 +61,36 @@ export function supportTopAt(surfaces: readonly Surface[], p: Vec3, padM = 0.2):
   return best ? { y: bestY, surface: best } : { y: 0, surface: null };
 }
 
-/** 5th percentile of world y over the depth points within `radius` (XZ) of `around`; `around.y` if none. */
-export function lowestYAround(map: DepthMap, frame: WorldFrame | null, around: Vec3, radius: number, stride = 2): number {
-  const ys: number[] = [];
+/**
+ * Support height around `around`: the most populated 2 cm height band among the depth
+ * points within `radius` (XZ) that lie at or below `around.y + 0.03`. The desk/floor an
+ * object stands on contributes far more points than the object or than stray stereo
+ * matches (the ZED sees a desk edge-on and scatters some points 30 cm below it, which
+ * ruins a minimum/percentile estimate). `around.y` if nothing qualifies.
+ */
+export function supportYAround(map: DepthMap, frame: WorldFrame | null, around: Vec3, radius: number, stride = 2, binM = 0.02): number {
+  const bins = new Map<number, number>();
+  const ceiling = around.y + 0.03;
   for (let y = 0; y < map.height; y += stride) {
     for (let x = 0; x < map.width; x += stride) {
       const p = pickFromMap(map, x, y, frame);
-      if (!p) continue;
+      if (!p || p.y > ceiling) continue;
       if (Math.hypot(p.x - around.x, p.z - around.z) > radius) continue;
-      ys.push(p.y);
+      const b = Math.floor(p.y / binM);
+      bins.set(b, (bins.get(b) ?? 0) + 1);
     }
   }
-  if (ys.length === 0) return around.y;
-  ys.sort((a, b) => a - b);
-  return ys[Math.floor(ys.length * 0.05)]!;
+  let best = -1;
+  let bestCount = 0;
+  for (const [b, c] of bins) {
+    if (c > bestCount) {
+      bestCount = c;
+      best = b;
+    }
+  }
+  if (bestCount === 0) return around.y;
+  // Top of the band (objects stand on the surface's upper side).
+  return (best + 1) * binM;
 }
 
 /**
@@ -103,13 +119,13 @@ export function detectVolumeAtPixel(
     return null;
   }
   trace.seed = seed;
-  // Support height: the lowest depth points around the click (the desk/floor the object stands
+  // Support height: the dominant height band around the click (the desk/floor the object stands
   // on is always visible around it). A registered surface is only trusted when it agrees with
   // that; transient planes fitted through can tops or a laptop lid sit at the object's own
   // height and would otherwise leave nothing "above the support".
-  const localMinY = lowestYAround(map, frame, seed, radius);
+  const localMinY = supportYAround(map, frame, seed, radius);
   const registered = supportTopAt(surfaces, seed);
-  const support = registered.surface && registered.y <= localMinY + 0.06 ? registered : { y: localMinY, surface: null };
+  const support = registered.surface && Math.abs(registered.y - localMinY) <= 0.06 ? registered : { y: localMinY, surface: null };
   trace.localMinY = localMinY;
   trace.registeredY = registered.surface ? registered.y : null;
   trace.supportY = support.y;
