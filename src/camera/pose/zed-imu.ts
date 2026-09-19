@@ -196,6 +196,11 @@ export class ZedImu {
     return this.device !== null && this.device.opened;
   }
 
+  /** `productName` of the connected device (for status UI), or null if not connected. */
+  get deviceLabel(): string | null {
+    return this.device?.productName ?? null;
+  }
+
   /** Request device access (needs a user gesture) and start the sensor stream. */
   async connect(): Promise<void> {
     const hid = typeof navigator !== 'undefined' ? navigator.hid : undefined;
