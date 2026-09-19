@@ -39,7 +39,7 @@ const PROVENANCE_RANK: Record<BackgroundProvenance, number> = {
 const MUTATION_ACTIONS = new Set<Intent['kind']>(['move', 'rotate', 'scale', 'delete', 'replace', 'spawn']);
 
 const OBJECT_ID_KINDS = new Set<Intent['kind']>([
-  'move', 'rotate', 'scale', 'delete', 'restore', 'replace', 'approve', 'setTier', 'setProxies', 'updateBackground', 'preview',
+  'move', 'rotate', 'scale', 'delete', 'restore', 'replace', 'approve', 'setTier', 'setProxies', 'updateBackground', 'preview', 'setVisual',
 ]);
 
 const APPROVAL_REQUIRED_KINDS = new Set<Intent['kind']>(['move', 'rotate', 'scale', 'delete', 'replace']);
@@ -59,6 +59,7 @@ function intentObjectId(intent: Intent): string | undefined {
     case 'setProxies':
     case 'updateBackground':
     case 'preview':
+    case 'setVisual':
       return intent.objectId;
     default:
       return undefined;
@@ -415,6 +416,12 @@ export function createResolver(opts?: ResolverOptions): TransactionResolver {
       case 'clearPreview': {
         const { preview: _drop, ...rest } = snapshot;
         return { ok: true, snapshot: { ...rest, version, committedAt }, applied: intent };
+      }
+      case 'setVisual': {
+        const existing = snapshot.objects[intent.objectId];
+        if (!existing) return reject(intent, 'unknown_object', `No object with id '${intent.objectId}' exists.`);
+        const next = cloneSnapshotWithObject(snapshot, intent.objectId, (o) => ({ ...o, visual: intent.visual }));
+        return { ok: true, snapshot: { ...next, version, committedAt }, applied: intent };
       }
       case 'undo':
       case 'redo':

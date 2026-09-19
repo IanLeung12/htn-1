@@ -352,6 +352,50 @@ describe('setProxies', () => {
   });
 });
 
+describe('setVisual', () => {
+  it('is additive: updates visual without touching replacedBy and is not undoable (system source)', () => {
+    const resolver = createResolver();
+    const obj = makeObject({ id: 'o1', visual: { kind: 'primitive', color: 0x8899aa }, replacedBy: undefined });
+    const snapshot = makeSnapshot({ objects: { o1: obj } });
+    const result = resolver.resolve(
+      snapshot,
+      env({ kind: 'setVisual', objectId: 'o1', visual: { kind: 'baked' } }, 0, 'system'),
+      makeConditions(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const updated = result.snapshot.objects.o1!;
+    expect(updated.visual).toEqual({ kind: 'baked' });
+    expect(updated.replacedBy).toBeUndefined();
+    expect(result.snapshot.version).toBe(snapshot.version + 1);
+  });
+
+  it('rejects setVisual for an unknown object', () => {
+    const resolver = createResolver();
+    const snapshot = makeSnapshot();
+    const result = resolver.resolve(
+      snapshot,
+      env({ kind: 'setVisual', objectId: 'nope', visual: { kind: 'baked' } }, 0, 'system'),
+      makeConditions(),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('unknown_object');
+  });
+
+  it('does not require approval or tier capability (unlike replace)', () => {
+    const resolver = createResolver();
+    const obj = makeObject({ id: 'o1', approved: false, tier: 'E' });
+    const snapshot = makeSnapshot({ objects: { o1: obj } });
+    const result = resolver.resolve(
+      snapshot,
+      env({ kind: 'setVisual', objectId: 'o1', visual: { kind: 'baked' } }, 0, 'system'),
+      makeConditions(),
+    );
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe('delete of non-physical objects', () => {
   it('allows deleting a spawned object with no background plates', () => {
     const resolver = createResolver();
