@@ -9,6 +9,16 @@ display loop never waits on capture, AI, or network work.
 Architecture and product rules live in the `reality-editor-*.md` documents. `STATE.md` tracks
 current status and decisions.
 
+## What works today (simulator verified)
+
+- Passthrough session with hands, controllers, planes, meshes, anchors, and depth occlusion.
+- Candidate discovery from scene volumes; guided multi-viewpoint clean-plate capture; tiers A to E.
+- Move, delete, restore, undo, redo through one deterministic resolver with envelope and tier checks.
+- Proxy physics: released objects settle onto tables and floors and push each other apart.
+- Voice commands ("delete the lamp", "move the cube up 20 cm", "what can I edit") and a palm menu.
+- Region state machine that reveals live reality when a hand or person crosses a captured region.
+- Quality watchdogs, on-device diagnostics, persistence across reloads.
+
 ## Quick start
 
 ```bash
@@ -36,4 +46,4 @@ To run on a Quest 3, serve over HTTPS (or use `adb reverse tcp:5173 tcp:5173` an
 | `tests/unit/` | vitest |
 | `tests/e2e/` | Playwright + IWER scenarios mapped to the feasibility gates |
 
-See `docs/module-ownership.md`, `docs/webxr-mapping.md`, and `docs/testing.md`.
+See `docs/architecture-map.md`, `docs/module-ownership.md`, `docs/webxr-mapping.md`, `docs/testing.md`, `docs/device.md`, and `docs/perf-audit.md`.
