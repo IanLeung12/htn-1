@@ -1,6 +1,6 @@
 # Reality Editor - Project State
 
-Last updated: 2026-09-19 (session 1, feature pass 3)
+Last updated: 2026-09-19 (session 1, feature pass 4)
 
 ## Decision log
 
@@ -43,6 +43,8 @@ Last updated: 2026-09-19 (session 1, feature pass 3)
 | Compact HUD strip, selection label, palm menu, landing pages | done |
 | Photometric: frame store, plate fix, textured shell, hull v2 (stencil-clipped multi-frame depth meshes) | done; deleted table matches ground truth exactly from 0 and 45 degrees |
 | Persistent room anchor, anchor-relative persistence | done (device relocalization untested) |
+| Two-hand move/yaw/scale with tier gating | done |
+| Captured object appearance for moved physical objects; captured-shell carve | done (moved table matches reference within 18/255) |
 | Review fixes (tracking signal, watchdog, one snapshot per frame, session guards, grab rules) | done |
 | Device validation on Quest 3 | blocked: no headset |
 
@@ -114,8 +116,8 @@ Last updated: 2026-09-19 (session 1, feature pass 3)
 - Guided capture sweeps a 180 degree arc from the head bearing; head positions behind the
   object can find per-pixel gaps in hull coverage and fall through to live passthrough. Widen
   the arc or add a second pass when the envelope is enlarged.
-- Captured-shell mode still shows a deleted object's scan-mesh geometry (the global mesh has
-  no per-object triangle ownership); live-overlay mode is the truthful path today.
+- Captured-shell carve and appearance meshes assume identity-rotation, axis-aligned proxies (true
+  for discovered objects today); rotated real objects would need oriented-box filters.
 - Emulator frame rate is software-GL bound (5 to 10 fps); app CPU per frame is under 1 ms.
 - Two agents running Playwright at once share port 5173; run suites serially.
 
