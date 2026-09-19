@@ -15,6 +15,8 @@ const CANDIDATE_LABELS = new Set<string>([
 ]);
 
 const SUPPORT_GAP_M = 0.08;
+/** Scan noise lets an object's bottom sit slightly below its support surface. */
+const SUPPORT_PENETRATION_M = 0.1;
 const WALL_TOUCH_M = 0.03;
 const MAX_DIMENSION_M = 2.0;
 
@@ -43,7 +45,7 @@ function findSupportSurface(volumeAabb: Aabb, surfaces: Surface[]): Surface | un
     if (s.label === 'floor') continue; // considered separately as a fallback below
     if (!xzOverlap(volumeAabb, s.aabb)) continue;
     const gap = volumeAabb.min.y - s.aabb.max.y;
-    if (gap < -1e-6 || gap > SUPPORT_GAP_M) continue; // surface must be at/just below the bottom
+    if (gap < -SUPPORT_PENETRATION_M || gap > SUPPORT_GAP_M) continue; // surface must be at/just below the bottom
     if (Math.abs(gap) < bestGap) {
       bestGap = Math.abs(gap);
       best = s;
@@ -64,7 +66,7 @@ function findSupportSurface(volumeAabb: Aabb, surfaces: Surface[]): Surface | un
   }
   if (floor) {
     const gap = volumeAabb.min.y - floor.aabb.max.y;
-    if (gap >= -1e-6 && gap <= SUPPORT_GAP_M) return floor;
+    if (gap >= -SUPPORT_PENETRATION_M && gap <= SUPPORT_GAP_M) return floor;
   }
   return undefined;
 }

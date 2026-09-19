@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import type { XRDevice } from 'iwer';
 import type { CameraFrame, CameraFrameSource } from '@/capture/contract';
+import type { Pose } from '@/core/types';
 
 const DEFAULT_WIDTH = 320;
 const DEFAULT_HEIGHT = 240;
@@ -25,8 +26,8 @@ const DEPTH_FAR = 8;
 
 export class SimCameraFrameSource implements CameraFrameSource {
   private readonly xrDevice: XRDevice;
-  private readonly width: number;
-  private readonly height: number;
+  private width: number;
+  private height: number;
   private readonly offscreen: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly camera: THREE.PerspectiveCamera;
@@ -44,15 +45,48 @@ export class SimCameraFrameSource implements CameraFrameSource {
     this.camera = new THREE.PerspectiveCamera((xrDevice.fovy * 180) / Math.PI, width / height, DEPTH_NEAR, DEPTH_FAR);
   }
 
+  /**
+   * SEM renders the passthrough canvas with the device FOV and the app canvas aspect,
+   * so the colour frame and our depth frame only line up if we use the same aspect.
+   */
+  private matchAspect(envCanvas: HTMLCanvasElement): void {
+    if (envCanvas.width === 0 || envCanvas.height === 0) return;
+    const aspect = envCanvas.width / envCanvas.height;
+    const height = Math.max(8, Math.round(this.width / aspect));
+    if (height === this.height) return;
+    this.height = height;
+    this.offscreen.height = height;
+  }
+
   get available(): boolean {
     return !!this.xrDevice.sem;
   }
 
-  async capture(): Promise<CameraFrame | null> {
+  async capture(viewpoint?: Pose): Promise<CameraFrame | null> {
     const sem = this.xrDevice.sem;
     if (!sem) return null;
 
+    // Render from the requested pose without disturbing the live head pose.
+    const saved = viewpoint
+      ? { p: this.xrDevice.position.clone(), q: this.xrDevice.quaternion.clone() }
+      : null;
+    if (viewpoint) {
+      this.xrDevice.position.set(viewpoint.position.x, viewpoint.position.y, viewpoint.position.z);
+      this.xrDevice.quaternion.set(viewpoint.rotation.x, viewpoint.rotation.y, viewpoint.rotation.z, viewpoint.rotation.w);
+    }
+    try {
+      return this.captureCurrent(sem);
+    } finally {
+      if (saved) {
+        this.xrDevice.position.copy(saved.p);
+        this.xrDevice.quaternion.copy(saved.q);
+      }
+    }
+  }
+
+  private captureCurrent(sem: NonNullable<XRDevice['sem']>): CameraFrame | null {
     sem.render(performance.now());
+    this.matchAspect(sem.environmentCanvas);
 
     this.ctx.clearRect(0, 0, this.width, this.height);
     this.ctx.drawImage(sem.environmentCanvas, 0, 0, this.width, this.height);
@@ -88,7 +122,7 @@ export class SimCameraFrameSource implements CameraFrameSource {
       DEPTH_FAR,
     );
     if (depthResult) {
-      depth = new Float32Array(depthResult.data);
+      depth = correctSemDepth(new Float32Array(depthResult.data), DEPTH_NEAR, DEPTH_FAR);
     }
 
     return {
@@ -105,4 +139,24 @@ export class SimCameraFrameSource implements CameraFrameSource {
       timestamp: performance.now(),
     };
   }
+}
+
+/**
+ * @iwer/sem decodes its RGBADepthPacking render target as r + g/256 + b/65536 + a/2^24,
+ * but three.js packs each channel with a 255/256 unpack downscale, so the decoded
+ * normalized depth is inflated by 256/255 and the linearized metres drift 3-8% too far
+ * at room scale. Re-pack the metres back to normalized depth, apply the missing
+ * downscale, and linearize again. Verified empirically: 1.0/1.5/2.0 m read
+ * 1.028/1.58/2.15 before correction.
+ */
+export function correctSemDepth(depth: Float32Array, near: number, far: number): Float32Array {
+  const range = far - near;
+  for (let i = 0; i < depth.length; i++) {
+    const m = depth[i] as number;
+    if (!(m > 0) || m >= far) continue;
+    const dInflated = (far - (near * far) / m) / range;
+    const d = dInflated * (255 / 256);
+    depth[i] = (near * far) / (far - d * range);
+  }
+  return depth;
 }

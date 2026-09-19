@@ -2,7 +2,11 @@ import { defineConfig } from 'vite';
 import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
-  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+    // @iwer/sem bundles its own three copy; force one instance so scene objects interoperate.
+    dedupe: ['three'],
+  },
   server: { port: 5173, strictPort: true },
   build: {
     target: 'es2022',

@@ -68,7 +68,7 @@ export async function verify(
   const passedDistances: number[] = [];
 
   for (const viewpoint of offPathViewpoints) {
-    const frame = await source.capture();
+    const frame = await source.capture(viewpoint);
     if (!frame) continue;
 
     let visibleCount = 0;

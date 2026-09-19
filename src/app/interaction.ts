@@ -106,7 +106,9 @@ export class InteractionController {
     const obj = snapshot.objects[grab.objectId];
     if (!obj) return;
 
-    let pose = obj.currentPose;
+    // Commit the previewed pose (the object followed the hand during the grab);
+    // fall back to the current pose if no preview was ever published.
+    let pose = snapshot.preview?.objectId === grab.objectId ? snapshot.preview.pose : obj.currentPose;
     const surface = surfaceBelow(snapshot, pose.position);
     if (surface && Math.abs(surface.aabb.max.y - pose.position.y) <= GRAB_SNAP_DIST) {
       pose = { position: { ...pose.position, y: surface.aabb.max.y }, rotation: pose.rotation };

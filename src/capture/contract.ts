@@ -22,8 +22,13 @@ export interface CameraFrame {
 
 export interface CameraFrameSource {
   readonly available: boolean;
-  /** Grab the newest frame; null if unavailable or not yet ready. */
-  capture(): Promise<CameraFrame | null>;
+  /**
+   * Grab the newest frame; null if unavailable or not yet ready.
+   * `viewpoint` is the pose the pipeline would like the frame taken from. A real
+   * device can only capture from where the head is (the guide asks the user to move
+   * there); the simulator renders from the requested pose directly.
+   */
+  capture(viewpoint?: Pose): Promise<CameraFrame | null>;
 }
 
 /** Raw detected geometry handed to discovery (already converted to plain data). */

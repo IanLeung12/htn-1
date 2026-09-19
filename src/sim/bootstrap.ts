@@ -40,6 +40,7 @@ import { DevUI } from '@iwer/devui';
 import { SyntheticEnvironmentModule } from '@iwer/sem';
 import { XRDevice, eulerToQuat, lookRotation, metaQuest3 } from 'iwer';
 import { SimCameraFrameSource } from './camera-source';
+import { LiftController } from './lift';
 import type {
   ControllerAPI,
   HandAPI,
@@ -234,6 +235,7 @@ export async function installSimulator(opts: SimOptions = {}): Promise<SimHandle
     device.quaternion.set(q.x, q.y, q.z, q.w);
   }
 
+  let lift: LiftController | null = null;
   const handle: SimHandle = {
     xrDevice,
     cameraFrameSource,
@@ -285,15 +287,15 @@ export async function installSimulator(opts: SimOptions = {}): Promise<SimHandle
     hideVolume(id) {
       const sem = xrDevice.sem;
       if (!sem) return;
-      const entity = objectMapOf(sem).get(id);
-      if (entity) entity.visible = false;
+      if (!lift) lift = new LiftController(sem);
+      lift.lift(id);
     },
 
     showVolume(id) {
       const sem = xrDevice.sem;
       if (!sem) return;
-      const entity = objectMapOf(sem).get(id);
-      if (entity) entity.visible = true;
+      if (!lift) lift = new LiftController(sem);
+      lift.restore(id);
     },
 
     perf() {

@@ -105,28 +105,6 @@ export function computeObservation(points: Vec3[], frames: CameraFrame[]): {
   return { observed, bestFrame, hadDepth };
 }
 
-function meanViewpoint(viewpoints: Pose[]): Vec3 {
-  if (viewpoints.length === 0) return { x: 0, y: 0, z: 0 };
-  const sum = viewpoints.reduce(
-    (acc, p) => ({ x: acc.x + p.position.x, y: acc.y + p.position.y, z: acc.z + p.position.z }),
-    { x: 0, y: 0, z: 0 },
-  );
-  return { x: sum.x / viewpoints.length, y: sum.y / viewpoints.length, z: sum.z / viewpoints.length };
-}
-
-function maxPairwiseDistance(viewpoints: Pose[]): number {
-  let max = 0;
-  for (let i = 0; i < viewpoints.length; i++) {
-    for (let j = i + 1; j < viewpoints.length; j++) {
-      const vi = viewpoints[i];
-      const vj = viewpoints[j];
-      if (!vi || !vj) continue;
-      max = Math.max(max, distance(vi.position, vj.position));
-    }
-  }
-  return max;
-}
-
 function tierForProvenance(provenance: BackgroundProvenance): EditTier {
   switch (provenance) {
     case 'observed_clean_plate': return 'A';
@@ -175,8 +153,8 @@ export async function acquireCleanPlate(
   }
 
   const frames: CameraFrame[] = [];
-  for (let i = 0; i < req.viewpoints.length; i++) {
-    const frame = await source.capture();
+  for (const viewpoint of req.viewpoints) {
+    const frame = await source.capture(viewpoint);
     if (frame) frames.push(frame);
   }
 
@@ -263,8 +241,17 @@ export async function acquireCleanPlate(
   const textureRef = `plate:${req.object.id}:${version}`;
   opts.registry.put(textureRef, { width: textureSize, height: textureSize, rgba });
 
-  const center = meanViewpoint(req.viewpoints);
-  const radius = Math.max(1.5, maxPairwiseDistance(req.viewpoints) + 1.0);
+  // The envelope is anchored on the exposed region itself: "within radius of the
+  // edited spot and looking roughly at it" (pointInEnvelope measures the angle between
+  // head forward and the direction to the centre). Radius covers every capture
+  // viewpoint plus a metre of slack.
+  const center: Vec3 = {
+    x: (region.min.x + region.max.x) / 2,
+    y: (region.min.y + region.max.y) / 2,
+    z: (region.min.z + region.max.z) / 2,
+  };
+  const farthestViewpoint = req.viewpoints.reduce((m, v) => Math.max(m, distance(v.position, center)), 0);
+  const radius = Math.max(1.5, farthestViewpoint + 1.0);
 
   const plate: BackgroundPlate = {
     id: textureRef,

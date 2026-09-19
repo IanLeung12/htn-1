@@ -1,6 +1,6 @@
 # Reality Editor - Project State
 
-Last updated: 2026-09-19 (session 1)
+Last updated: 2026-09-19 (session 1, integration pass)
 
 ## Decision log
 
@@ -27,12 +27,15 @@ Last updated: 2026-09-19 (session 1)
 | Planning docs read, stack chosen | done |
 | Repo scaffold (vite/ts/vitest/playwright) | done |
 | Core contract `src/core/types.ts` | done |
-| Core logic (store, resolver, regions, quality, perf) | in progress |
-| XR session + feature negotiation + input | in progress |
-| Renderer (passthrough, shell, objects, depth occlusion) | in progress |
-| Simulator page (IWER + SEM + devui) | in progress |
-| Capture pipeline (discovery, clean plate, tiers) | in progress |
-| E2E tests (Playwright + IWER) | in progress |
+| Core logic (store, resolver, regions, quality, perf) | done, 103 unit tests |
+| XR session + feature negotiation + input | done (untested on device) |
+| Renderer (passthrough, shell, objects, depth occlusion) | done (untested on device) |
+| Simulator page (IWER + SEM + devui) | done; lift/return of objects, requested-viewpoint camera source |
+| Capture pipeline (discovery, clean plate, tiers) | done, 18 unit tests; end-to-end tier A in the simulator |
+| E2E tests (Playwright + IWER) | 18 pass, 1 skipped (region wiring) |
+| Region state machine wired into the app | todo |
+| Multi-viewpoint guided capture in the app | todo (pipeline supports it; app passes one viewpoint) |
+| Proxy physics (settle, collide) | todo |
 | Device validation on Quest 3 | blocked: no headset |
 
 ## Feasibility gates (from canonical architecture) mapped to tests
@@ -46,6 +49,19 @@ Last updated: 2026-09-19 (session 1)
 | 5 person crossing not hidden | unit: region fallback on dynamic obstruction |
 | 6 static shell depth masking | render: static surfaces excluded from depth occlusion |
 | 8 5-10 objects sustained perf | e2e perf trace p95/p99 (emulated, indicative only) |
+
+## Integration findings (2026-09-19)
+
+- Emulator depth: `@iwer/sem` decodes its RGBADepthPacking target without three.js's 255/256
+  unpack scale, inflating depth 3-8% at room scale. Corrected in `src/sim/camera-source.ts`.
+- Emulator surfaces bump `lastChangedTime` every frame; scene understanding now uses a pose +
+  size signature for change detection (was causing ~200 store commits per second).
+- Quest furniture volumes are rotated and have their origin at the top face; AABBs are now
+  computed from rotated vertices and the volume centre is the AABB centre.
+- Lifting an object in the simulator must also carve the global scan mesh and take stacked
+  objects (a lamp on the table) with it; otherwise depth still sees the object.
+- Grab release must commit the previewed pose, not the stale current pose.
+- Persistence debounce needs a max wait because previews commit every frame.
 
 ## Open questions / risks
 

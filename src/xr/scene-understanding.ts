@@ -8,8 +8,9 @@
  * the 'anchors' feature is enabled, tracking localized anchor ids for
  * RuntimeConditions.localizedAnchors.
  */
-import type { Pose, SemanticLabel, Surface } from '@/core/types';
+import type { Pose, SemanticLabel, Surface, Vec3 } from '@/core/types';
 import type { DetectedVolume } from '@/capture/contract';
+import { quatRotateVec3 } from '@/core/math';
 
 const VOLUME_LABELS = new Set(['table', 'desk', 'shelf', 'couch', 'bed', 'storage', 'lamp', 'plant', 'screen']);
 
@@ -47,51 +48,59 @@ function poseFromXRPose(xrPose: XRPose): Pose {
   };
 }
 
-function polygonAabb(polygon: { x: number; z: number }[], pose: Pose) {
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  for (const p of polygon) {
-    minX = Math.min(minX, p.x);
-    maxX = Math.max(maxX, p.x);
-    minZ = Math.min(minZ, p.z);
-    maxZ = Math.max(maxZ, p.z);
+function aabbOfLocalPoints(points: Iterable<Vec3>, pose: Pose, pad: Vec3) {
+  const min = { x: Infinity, y: Infinity, z: Infinity };
+  const max = { x: -Infinity, y: -Infinity, z: -Infinity };
+  for (const local of points) {
+    // Rotate into world orientation, then translate: plane polygons and mesh
+    // vertices are reported in the entity's own space, and Quest furniture is
+    // frequently rotated 90 degrees about some axis.
+    const r = quatRotateVec3(pose.rotation, local);
+    const x = pose.position.x + r.x;
+    const y = pose.position.y + r.y;
+    const z = pose.position.z + r.z;
+    if (x < min.x) min.x = x;
+    if (y < min.y) min.y = y;
+    if (z < min.z) min.z = z;
+    if (x > max.x) max.x = x;
+    if (y > max.y) max.y = y;
+    if (z > max.z) max.z = z;
   }
-  if (!Number.isFinite(minX)) {
-    minX = maxX = minZ = maxZ = 0;
+  if (!Number.isFinite(min.x)) {
+    return {
+      min: { x: pose.position.x - pad.x, y: pose.position.y - pad.y, z: pose.position.z - pad.z },
+      max: { x: pose.position.x + pad.x, y: pose.position.y + pad.y, z: pose.position.z + pad.z },
+    };
   }
   return {
-    min: { x: pose.position.x + minX, y: pose.position.y - 0.01, z: pose.position.z + minZ },
-    max: { x: pose.position.x + maxX, y: pose.position.y + 0.01, z: pose.position.z + maxZ },
+    min: { x: min.x - pad.x, y: min.y - pad.y, z: min.z - pad.z },
+    max: { x: max.x + pad.x, y: max.y + pad.y, z: max.z + pad.z },
   };
 }
 
-function meshAabb(vertices: Float32Array, pose: Pose) {
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
+/** Content signature for change detection (pose rounded to 1 mm / 1e-3 rad, geometry size). */
+function poseSignature(pose: Pose, size: number, _lastChanged: number): string {
+  const p = pose.position;
+  const r = pose.rotation;
+  return `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)}|${r.x.toFixed(3)},${r.y.toFixed(3)},${r.z.toFixed(3)},${r.w.toFixed(3)}|${size}`;
+}
+
+function aabbCenter(aabb: { min: Vec3; max: Vec3 }): Vec3 {
+  return { x: (aabb.min.x + aabb.max.x) / 2, y: (aabb.min.y + aabb.max.y) / 2, z: (aabb.min.z + aabb.max.z) / 2 };
+}
+
+function polygonAabb(polygon: { x: number; z: number }[], pose: Pose) {
+  return aabbOfLocalPoints(polygon.map((p) => ({ x: p.x, y: 0, z: p.z })), pose, { x: 0, y: 0.01, z: 0 });
+}
+
+function* vertexPoints(vertices: Float32Array): Iterable<Vec3> {
   for (let i = 0; i + 2 < vertices.length; i += 3) {
-    const x = vertices[i] as number;
-    const y = vertices[i + 1] as number;
-    const z = vertices[i + 2] as number;
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minY = Math.min(minY, y);
-    maxY = Math.max(maxY, y);
-    minZ = Math.min(minZ, z);
-    maxZ = Math.max(maxZ, z);
+    yield { x: vertices[i] as number, y: vertices[i + 1] as number, z: vertices[i + 2] as number };
   }
-  if (!Number.isFinite(minX)) {
-    minX = maxX = minY = maxY = minZ = maxZ = 0;
-  }
-  return {
-    min: { x: pose.position.x + minX, y: pose.position.y + minY, z: pose.position.z + minZ },
-    max: { x: pose.position.x + maxX, y: pose.position.y + maxY, z: pose.position.z + maxZ },
-  };
+}
+
+function meshAabb(vertices: Float32Array, pose: Pose) {
+  return aabbOfLocalPoints(vertexPoints(vertices), pose, { x: 0, y: 0, z: 0 });
 }
 
 export interface SceneUnderstandingCallbacks {
@@ -108,7 +117,8 @@ export interface RawGlobalMesh {
 }
 
 export class SceneUnderstanding {
-  private readonly lastChanged = new Map<string, number>();
+  private readonly lastChanged = new Map<string, string>();
+  private readonly volumeCache = new Map<string, DetectedVolume>();
   private readonly planeIds = new WeakMap<XRPlane, string>();
   private readonly meshIds = new WeakMap<object, string>();
   private nextId = 0;
@@ -153,7 +163,12 @@ export class SceneUnderstanding {
       }
     }
 
-    this.latestVolumes = volumes;
+    // Quest exposes furniture both as a top plane and as a labelled mesh/box volume.
+    // Plane-derived volumes are thin slabs with the plane's orientation and are only a
+    // fallback for runtimes that never report labelled meshes; when real volumes exist,
+    // drop the slabs so candidate discovery works on true object extents.
+    const meshVolumes = volumes.filter((v) => v.id.startsWith('mesh-'));
+    this.latestVolumes = meshVolumes.length > 0 ? meshVolumes : volumes;
     this.latestGlobalMeshes = globalMeshes;
 
     this.maybeAnchorRoom(frame, refSpace);
@@ -161,13 +176,20 @@ export class SceneUnderstanding {
 
   private handlePlane(plane: XRPlane, frame: XRFrame, refSpace: XRReferenceSpace, volumes: DetectedVolume[]): void {
     const id = this.idFor(this.planeIds as unknown as WeakMap<object, string>, plane, 'plane');
-    const prevChanged = this.lastChanged.get(id);
-    if (prevChanged === plane.lastChangedTime) return; // unchanged, skip dispatch
-
     const xrPose = frame.getPose(plane.planeSpace, refSpace);
     if (!xrPose) return;
 
     const pose = poseFromXRPose(xrPose);
+    // Some runtimes (the emulator included) bump lastChangedTime every frame, so
+    // change detection uses a content signature: pose + polygon vertex count.
+    const signature = poseSignature(pose, plane.polygon.length, plane.lastChangedTime);
+    if (this.lastChanged.get(id) === signature) {
+      if (VOLUME_LABELS.has(plane.semanticLabel ?? '')) {
+        const cached = this.volumeCache.get(id);
+        if (cached) volumes.push(cached);
+      }
+      return;
+    }
     const label = mapSemanticLabel(plane.semanticLabel);
     const polygon = plane.polygon.map((p) => ({ x: p.x, z: p.z }));
 
@@ -181,19 +203,21 @@ export class SceneUnderstanding {
       lastChanged: plane.lastChangedTime,
     };
 
-    this.lastChanged.set(id, plane.lastChangedTime);
+    this.lastChanged.set(id, signature);
     this.callbacks.registerSurface(surface);
 
     if (VOLUME_LABELS.has(plane.semanticLabel ?? '')) {
       const halfX = (surface.aabb.max.x - surface.aabb.min.x) / 2;
       const halfY = 0.02;
       const halfZ = (surface.aabb.max.z - surface.aabb.min.z) / 2;
-      volumes.push({
+      const volume: DetectedVolume = {
         id,
         label: plane.semanticLabel ?? 'other',
-        pose,
+        pose: { position: aabbCenter(surface.aabb), rotation: pose.rotation },
         halfExtents: { x: halfX, y: halfY, z: halfZ },
-      });
+      };
+      this.volumeCache.set(id, volume);
+      volumes.push(volume);
     }
   }
 
@@ -205,7 +229,6 @@ export class SceneUnderstanding {
     globalMeshes: RawGlobalMesh[],
   ): void {
     const id = this.idFor(this.meshIds, mesh as unknown as object, 'mesh');
-    const prevChanged = this.lastChanged.get(id);
     const xrPose = frame.getPose(mesh.meshSpace, refSpace);
     if (!xrPose) return;
     const pose = poseFromXRPose(xrPose);
@@ -218,7 +241,12 @@ export class SceneUnderstanding {
       return;
     }
 
-    if (prevChanged === mesh.lastChangedTime) return;
+    const signature = poseSignature(pose, mesh.vertices.length, mesh.lastChangedTime);
+    if (this.lastChanged.get(id) === signature) {
+      const cached = this.volumeCache.get(id);
+      if (cached) volumes.push(cached);
+      return;
+    }
 
     const label = mapSemanticLabel(mesh.semanticLabel);
     const surface: Surface = {
@@ -230,14 +258,16 @@ export class SceneUnderstanding {
       aabb: meshAabb(mesh.vertices, pose),
       lastChanged: mesh.lastChangedTime,
     };
-    this.lastChanged.set(id, mesh.lastChangedTime);
+    this.lastChanged.set(id, signature);
     this.callbacks.registerSurface(surface);
 
     if (VOLUME_LABELS.has(mesh.semanticLabel ?? '')) {
-      volumes.push({
+      // Quest volumes report their origin at the top-face centre; the object package
+      // wants the geometric centre so proxies and footprints line up with the AABB.
+      const volume: DetectedVolume = {
         id,
         label: mesh.semanticLabel ?? 'other',
-        pose,
+        pose: { position: aabbCenter(surface.aabb), rotation: pose.rotation },
         halfExtents: {
           x: (surface.aabb.max.x - surface.aabb.min.x) / 2,
           y: (surface.aabb.max.y - surface.aabb.min.y) / 2,
@@ -245,7 +275,9 @@ export class SceneUnderstanding {
         },
         vertices: mesh.vertices,
         indices: mesh.indices,
-      });
+      };
+      this.volumeCache.set(id, volume);
+      volumes.push(volume);
     }
   }
 

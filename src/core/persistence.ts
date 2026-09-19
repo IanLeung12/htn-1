@@ -51,15 +51,30 @@ export function createLocalStorageAdapter(prefix = 'reality-editor:'): StorageAd
  * adapter after each commit. Returns an unsubscribe function that also
  * cancels any pending debounced write.
  */
-export function autoPersist(store: SceneStore, adapter: StorageAdapter, key: string, debounceMs = 250): () => void {
+export function autoPersist(
+  store: SceneStore,
+  adapter: StorageAdapter,
+  key: string,
+  debounceMs = 250,
+  maxWaitMs = 1000,
+): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let firstPendingAt: number | undefined;
 
+  const flush = (): void => {
+    timer = undefined;
+    firstPendingAt = undefined;
+    void adapter.set(key, store.serialize());
+  };
+
+  // Debounce, but never wait longer than maxWaitMs: the store can commit every
+  // frame (previews, surface updates) and a pure debounce would never settle.
   const unsubscribe = store.subscribe(() => {
+    const now = Date.now();
+    if (firstPendingAt === undefined) firstPendingAt = now;
     if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = undefined;
-      void adapter.set(key, store.serialize());
-    }, debounceMs);
+    const remainingMax = Math.max(0, firstPendingAt + maxWaitMs - now);
+    timer = setTimeout(flush, Math.min(debounceMs, remainingMax));
   });
 
   return () => {
