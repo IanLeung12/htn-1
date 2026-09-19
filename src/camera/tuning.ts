@@ -50,6 +50,10 @@ export interface CameraTuning {
   anchorFarM: number;
   /** Stereo: multiplier on the calibrated/nominal focal length (single-point distance calibration). */
   stereoFxScale: number;
+  /** 1 = draw the live-depth occlusion quad (spawned objects hide behind real ones); 0 = off. */
+  occluderEnabled: number;
+  /** Metres added to the live depth before it's written to the depth buffer (see depth-occluder.ts). */
+  occluderBiasM: number;
 }
 
 export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
@@ -77,6 +81,8 @@ export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
   anchorFarV: 0,
   anchorFarM: 0,
   stereoFxScale: 1,
+  occluderEnabled: 1,
+  occluderBiasM: 0.02,
 });
 
 export interface TuningSpecEntry {
@@ -84,7 +90,7 @@ export interface TuningSpecEntry {
   max: number;
   step: number;
   label: string;
-  group: 'camera' | 'depth' | 'planes' | 'volumes';
+  group: 'camera' | 'depth' | 'planes' | 'volumes' | 'occlusion';
 }
 
 export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
@@ -112,6 +118,8 @@ export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
   anchorFarV: { min: 0, max: 1, step: 0.001, label: 'Far anchor v', group: 'depth' },
   anchorFarM: { min: 0, max: 20, step: 0.01, label: 'Far anchor (m)', group: 'depth' },
   stereoFxScale: { min: 0.5, max: 2, step: 0.005, label: 'Stereo fx scale', group: 'depth' },
+  occluderEnabled: { min: 0, max: 1, step: 1, label: 'Depth occlusion (o)', group: 'occlusion' },
+  occluderBiasM: { min: 0, max: 0.2, step: 0.005, label: 'Occluder bias (m)', group: 'occlusion' },
 };
 
 export type TuningPresetId = 'laptop-desk' | 'phone-handheld' | 'tripod-room';
