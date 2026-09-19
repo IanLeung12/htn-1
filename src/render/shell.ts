@@ -17,8 +17,14 @@
  * lower-resolution/laggier depth-sensing estimate for the same real surface.
  */
 import * as THREE from 'three';
-import type { Region, SceneSnapshot, Surface } from '@/core/types';
+import type { Region, SceneSnapshot, Surface, Vec3 } from '@/core/types';
 import type { RawGlobalMesh } from '@/xr/scene-understanding';
+import type { CameraFrame } from '@/capture/contract';
+import type { FrameStore } from '@/capture/frame-store';
+import { ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
+import { inFrame, projectPoint } from '@/capture/geom';
+import { quatRotateVec3 } from '@/core/math';
+import { createProjectiveMaterial, setMaterialFrame } from './projective';
 
 function regionForSurface(snapshot: SceneSnapshot, surfaceId: string): Region | undefined {
   for (const region of Object.values(snapshot.regions)) {
@@ -32,9 +38,34 @@ function isVisibleShellState(region: Region | undefined): boolean {
   return region.state === 'CAPTURED' || region.state === 'HYBRID';
 }
 
+/**
+ * Best room-shell frame for a surface: must see the surface centre in-frame,
+ * and among those, the one whose view direction is most head-on to the
+ * surface (dot(forward, normal) most negative).
+ */
+function pickBestFrame(frames: CameraFrame[], centre: Vec3, normal: Vec3): CameraFrame | undefined {
+  let best: CameraFrame | undefined;
+  let bestScore = -Infinity;
+  for (const frame of frames) {
+    const proj = projectPoint(centre, frame.pose, frame.fovY, frame.aspect, frame.width, frame.height);
+    if (!proj || !inFrame(proj, frame.width, frame.height)) continue;
+    const forward = quatRotateVec3(frame.pose.rotation, { x: 0, y: 0, z: -1 });
+    const score = -(forward.x * normal.x + forward.y * normal.y + forward.z * normal.z);
+    if (score > bestScore) {
+      bestScore = score;
+      best = frame;
+    }
+  }
+  return best;
+}
+
 interface SurfaceEntry {
   mesh: THREE.Mesh;
   lastChanged: number;
+  flatMaterial: THREE.MeshStandardMaterial;
+  projMaterial: THREE.ShaderMaterial;
+  usingProjective: boolean;
+  selectedFrame: CameraFrame | undefined;
 }
 
 export class ShellRenderer {
@@ -46,6 +77,8 @@ export class ShellRenderer {
   private readonly surfaceEntries = new Map<string, SurfaceEntry>();
   private readonly globalMeshEntries = new Map<string, THREE.Mesh>();
   private lastVersion = -1;
+
+  constructor(private readonly frameStore?: FrameStore) {}
 
   update(snapshot: SceneSnapshot, globalMeshes: RawGlobalMesh[]): void {
     // Regions live inside the snapshot (see core/types SceneSnapshot.regions), so
@@ -93,8 +126,8 @@ export class ShellRenderer {
     let entry = this.surfaceEntries.get(surface.id);
     if (!entry || entry.lastChanged !== surface.lastChanged) {
       const geometry = this.buildGeometry(surface);
-      const material = new THREE.MeshStandardMaterial({ color: 0x778899 });
-      const mesh = new THREE.Mesh(geometry, material);
+      const flatMaterial = new THREE.MeshStandardMaterial({ color: 0x778899 });
+      const mesh = new THREE.Mesh(geometry, flatMaterial);
       // renderOrder 0: shell draws first so it claims the depth buffer before
       // the XR depth occlusion mesh (renderOrder 1, see xr/depth.ts) and
       // editable objects (renderOrder 2, see render/objects.ts).
@@ -110,7 +143,14 @@ export class ShellRenderer {
         this.occluderGroup.remove(entry.mesh);
         this.visibleGroup.remove(entry.mesh);
       }
-      entry = { mesh, lastChanged: surface.lastChanged };
+      entry = {
+        mesh,
+        lastChanged: surface.lastChanged,
+        flatMaterial,
+        projMaterial: createProjectiveMaterial(),
+        usingProjective: false,
+        selectedFrame: undefined,
+      };
       this.surfaceEntries.set(surface.id, entry);
     }
     this.placeSurface(surface, entry, snapshot);
@@ -119,20 +159,49 @@ export class ShellRenderer {
   private placeSurface(surface: Surface, entry: SurfaceEntry, snapshot: SceneSnapshot): void {
     const region = regionForSurface(snapshot, surface.id);
     const visible = isVisibleShellState(region);
-    const material = entry.mesh.material as THREE.MeshStandardMaterial;
 
     this.occluderGroup.remove(entry.mesh);
     this.visibleGroup.remove(entry.mesh);
 
     if (visible) {
+      // CAPTURED/HYBRID: texture from the nearest room-shell viewpoint that
+      // actually sees this surface, if one was ever captured (see
+      // AppHandle.captureRoomShell); otherwise fall back to the flat tile.
+      const roomFrames = this.frameStore?.get(ROOM_SHELL_FRAME_ID);
+      const centre: Vec3 = {
+        x: (surface.aabb.min.x + surface.aabb.max.x) / 2,
+        y: (surface.aabb.min.y + surface.aabb.max.y) / 2,
+        z: (surface.aabb.min.z + surface.aabb.max.z) / 2,
+      };
+      const normal = quatRotateVec3(surface.pose.rotation, { x: 0, y: 1, z: 0 });
+      const best = roomFrames && roomFrames.length > 0 ? pickBestFrame(roomFrames, centre, normal) : undefined;
+
+      if (best) {
+        if (entry.mesh.material !== entry.projMaterial || entry.selectedFrame !== best) {
+          setMaterialFrame(entry.projMaterial, best);
+          entry.mesh.material = entry.projMaterial;
+          entry.usingProjective = true;
+          entry.selectedFrame = best;
+        }
+      } else {
+        entry.mesh.material = entry.flatMaterial;
+        entry.usingProjective = false;
+        entry.selectedFrame = undefined;
+      }
+
+      const material = entry.mesh.material as THREE.Material;
       material.colorWrite = true;
       material.depthWrite = true;
       this.visibleGroup.add(entry.mesh);
     } else {
       // Invisible occluder/collider: still write depth so it participates in
       // z-testing against spawned objects, but never contributes color.
-      material.colorWrite = false;
-      material.depthWrite = true;
+      // Always the flat material here - no point paying for the shader when
+      // nothing is drawn.
+      entry.mesh.material = entry.flatMaterial;
+      entry.usingProjective = false;
+      entry.flatMaterial.colorWrite = false;
+      entry.flatMaterial.depthWrite = true;
       this.occluderGroup.add(entry.mesh);
     }
   }

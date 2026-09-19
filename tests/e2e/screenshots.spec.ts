@@ -5,9 +5,28 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { PNG } from 'pngjs';
 import { test, expect } from './fixtures';
 
 const OUT = path.join(process.cwd(), 'test-results', 'screens');
+
+/** Mean 0..255 luminance of an (x,y)-centered square patch of a PNG buffer. */
+function patchLuminance(png: PNG, cx: number, cy: number, radius: number): number {
+  let sum = 0;
+  let count = 0;
+  for (let y = cy - radius; y <= cy + radius; y++) {
+    for (let x = cx - radius; x <= cx + radius; x++) {
+      if (x < 0 || y < 0 || x >= png.width || y >= png.height) continue;
+      const idx = (png.width * y + x) << 2;
+      const r = png.data[idx]!;
+      const g = png.data[idx + 1]!;
+      const b = png.data[idx + 2]!;
+      sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      count += 1;
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
 
 test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   fs.mkdirSync(OUT, { recursive: true });
@@ -27,6 +46,7 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   await simPage.screenshot({ path: path.join(OUT, '02-spawned-settled.png') });
 
   await evalApp(() => window.__testHelpers!.dispatchIntent({ kind: 'setMode', mode: 'captured-shell' }, 'test'));
+  const roomShell = await evalApp(() => window.__realityEditor!.captureRoomShell?.());
   await simPage.waitForTimeout(600);
   await simPage.screenshot({ path: path.join(OUT, '03-captured-shell.png') });
 
@@ -44,6 +64,46 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   const del = await evalApp((id) => window.__testHelpers!.dispatchIntent({ kind: 'delete', objectId: id }, 'test'), tableId!);
   await simPage.waitForTimeout(400);
   await simPage.screenshot({ path: path.join(OUT, '05-table-deleted.png') });
+
+  // Live-overlay mode, viewed from the side (not top-down): a flat plate on
+  // the floor cannot hide a 3D object seen edge-on, which is exactly what
+  // BackgroundHull (src/render/background-hull.ts) is for. Frame the deleted
+  // table's original position dead-center so "the projected centre of the
+  // deleted table's original box" is just the middle of each eye's viewport.
+  await evalApp(() => window.__testHelpers!.dispatchIntent({ kind: 'setMode', mode: 'live-overlay' }, 'test'));
+  await simPage.evaluate((p) => {
+    window.__sim!.setHead({ x: p.x, y: p.y + 0.3, z: p.z + 1.2 });
+    window.__sim!.lookAt(p);
+  }, pos);
+  await simPage.waitForTimeout(400);
+  const sidePath = path.join(OUT, '06-table-deleted-side-view.png');
+  await simPage.screenshot({ path: sidePath });
+
+  const viewport = simPage.viewportSize();
+  expect(viewport).not.toBeNull();
+  const eyeWidth = viewport!.width / 2;
+  const eyeHeight = viewport!.height;
+  const png = PNG.sync.read(fs.readFileSync(sidePath));
+
+  // Camera looks directly at `pos`, so its projection sits at the centre of
+  // each eye's own viewport; sample the left eye's centre plus a
+  // known-background patch well clear of the table's footprint (near the
+  // top of the same viewport - ceiling/wall, never the deleted object).
+  const centerX = Math.round(eyeWidth / 2);
+  const centerY = Math.round(eyeHeight / 2);
+  const tableLuminance = patchLuminance(png, centerX, centerY, 6);
+  const backgroundLuminance = patchLuminance(png, centerX, Math.round(eyeHeight * 0.12), 6);
+
+  console.log('SCREENS', JSON.stringify({
+    cap, del: del.ok, tableId, roomShell,
+    tableLuminance, backgroundLuminance,
+  }));
+
+  // Before the fix, the still-visible real table volume reads as a distinctly
+  // different (darker/lighter) blob than its surroundings; after
+  // BackgroundHull replaces it with the nearest clean-plate viewpoint, the
+  // two patches should read as roughly the same background.
+  expect(Math.abs(tableLuminance - backgroundLuminance)).toBeLessThanOrEqual(25);
 
   // Hand menu: bring the head back to a neutral forward-looking pose, raise
   // the left hand ~0.35m in front of it with the palm turned toward the
@@ -71,7 +131,6 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
     void window.__sim!.hand('left').moveTo({ x: 0, y: 1.6, z: -0.35 }, 0);
   }, palmTowardHead);
   await simPage.waitForTimeout(300);
-  await simPage.screenshot({ path: path.join(OUT, '06-hand-menu.png') });
+  await simPage.screenshot({ path: path.join(OUT, '07-hand-menu.png') });
 
-  console.log('SCREENS', JSON.stringify({ cap, del: del.ok, tableId }));
 });

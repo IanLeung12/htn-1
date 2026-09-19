@@ -149,6 +149,7 @@ export async function acquireCleanPlate(
         background: [...req.object.background, plate],
       },
       framesUsed: 0,
+      frames: [],
     };
   }
 
@@ -275,5 +276,5 @@ export async function acquireCleanPlate(
     },
   };
 
-  return { plate, object, framesUsed: frames.length };
+  return { plate, object, framesUsed: frames.length, frames };
 }

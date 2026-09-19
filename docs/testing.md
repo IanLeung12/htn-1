@@ -132,7 +132,7 @@ the same document.
   - `03-captured-shell.png` - after `setMode('captured-shell')`, room-mode glyph filled.
   - `04-table-before-delete.png` / `05-table-deleted.png` - a captured table, tier A, before
     and after `delete` (clean-plate reveal).
-  - `06-hand-menu.png` - the left hand raised in front of the head with its palm turned
+  - `07-hand-menu.png` - the left hand raised in front of the head with its palm turned
     toward it (`window.__sim.hand('left').setPose(...)` + `.moveTo(...)`), showing the
     palm-up hand menu (`src/render/hand-menu.ts`). The rotation used here isn't an arbitrary
     guess: IWER's `relaxedHandPose` (the hand's rest pose) bakes a real rotation into the

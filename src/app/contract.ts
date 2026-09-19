@@ -66,6 +66,15 @@ export interface AppHandle {
    * a scene_volume with Tier E and returns the tier.
    */
   captureCleanPlate(objectId: string): Promise<{ tier: string; coverage: number }>;
+  /**
+   * Guided orbit capture of the whole room (8 viewpoints around the centre
+   * looking outward at the walls, plus 4 looking down at the floor), stored
+   * under `ROOM_SHELL_FRAME_ID` in the shared FrameStore so captured-shell
+   * mode can texture surfaces from the nearest real viewpoint instead of a
+   * flat color (see src/render/shell.ts). Optional: only meaningful once a
+   * camera source and known surfaces exist.
+   */
+  captureRoomShell?(): Promise<{ framesCaptured: number }>;
   /** Grab an object by id with the given hand (test/voice path; same resolver). */
   grab(objectId: string, hand: 'left' | 'right'): boolean;
   release(hand: 'left' | 'right'): void;

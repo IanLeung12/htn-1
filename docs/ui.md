@@ -84,7 +84,7 @@ non-trivial functions of the hand root quaternion under IWER's `relaxedHandPose`
 pose bakes a real rotation into the wrist joint, it isn't identity relative to the hand
 root. `tests/e2e/screenshots.spec.ts`'s hand-menu screenshot picks a rotation (-66 degrees
 about world +X) found by a short offline search that scores well on both constraints at
-once; see `docs/testing.md`'s note on `06-hand-menu.png` for the numbers and the derivation
+once; see `docs/testing.md`'s note on `07-hand-menu.png` for the numbers and the derivation
 script's approach. This is purely a simulator/test concern - on real hand tracking the
 joints (and therefore both `palmNormal` and `wristQuaternion`) come from the actual hand
 pose, not a fixed rest-pose config.
