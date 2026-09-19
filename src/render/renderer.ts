@@ -23,6 +23,13 @@ export function createRenderer(container: HTMLElement): RendererHandle {
     canvas,
     alpha: true,
     antialias: true,
+    // Needed for BackgroundHull's silhouette-clipped depth-mesh reprojection
+    // (src/render/background-hull.ts): an object's occlusion-proxy box is
+    // stamped into the stencil buffer, then only the pixels inside that
+    // silhouette are replaced by the true (parallax-correct) background
+    // geometry. `autoClearStencil` defaults to true, so the stencil buffer
+    // is cleared every frame with no extra wiring here.
+    stencil: true,
   });
   renderer.setClearColor(0x000000, 0); // alpha 0: passthrough shows through
   renderer.setPixelRatio(1);

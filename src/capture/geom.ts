@@ -5,7 +5,7 @@
  */
 import type { CameraFrame } from './contract';
 import type { Pose, Quat, Vec3 } from '@/core/types';
-import { quatConjugate, quatRotateVec3, sub } from '@/core/math';
+import { add, quatConjugate, quatRotateVec3, sub } from '@/core/math';
 
 export interface Projection {
   /** Pixel x, 0 = left edge. */
@@ -45,6 +45,36 @@ export function projectPoint(
   const y = (1 - (ndcY * 0.5 + 0.5)) * height;
 
   return { x, y, depth };
+}
+
+/**
+ * Inverse of `projectPoint`: given a pixel and a depth (metres along the
+ * camera's forward axis, same convention as `Projection.depth` and
+ * `CameraFrame.depth`), recover the world-space point. Exact round trip with
+ * `projectPoint` (same pinhole model, same forward -Z/up +Y convention, same
+ * pixel y=0-is-top-row mapping) up to floating point error - unprojecting a
+ * pixel+depth and re-projecting the result yields the same pixel and depth.
+ * Used to build the depth-mesh geometry in `src/render/depth-mesh.ts`.
+ */
+export function unprojectPixel(
+  x: number,
+  y: number,
+  depth: number,
+  pose: Pose,
+  fovY: number,
+  aspect: number,
+  width: number,
+  height: number,
+): Vec3 {
+  const tanHalfFovY = Math.tan(fovY / 2);
+  const ndcX = (2 * x) / width - 1;
+  const ndcY = 1 - (2 * y) / height;
+  const local: Vec3 = {
+    x: ndcX * depth * tanHalfFovY * aspect,
+    y: ndcY * depth * tanHalfFovY,
+    z: -depth,
+  };
+  return add(pose.position, quatRotateVec3(pose.rotation, local));
 }
 
 /** True if a projected point lands within the frame's pixel bounds. */
