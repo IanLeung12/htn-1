@@ -44,8 +44,8 @@ export interface CameraTuning {
 }
 
 export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
-  cameraHeightM: 1.1,
-  pitchDeg: -20,
+  cameraHeightM: 0.45,
+  pitchDeg: -6,
   fovYDeg: 50,
   depthScale: 1,
   depthShiftM: 0,
@@ -57,7 +57,7 @@ export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
   clusterCellM: 0.05,
   clusterMinCount: 30,
   clusterMinHeightM: 0.04,
-  volumeMaxSideM: 2,
+  volumeMaxSideM: 1.2,
   surfaceIntervalMs: 400,
   pointStride: 2,
   autoAttitude: 1,
@@ -89,6 +89,54 @@ export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
   surfaceIntervalMs: { min: 100, max: 2000, step: 10, label: 'Surface interval (ms)', group: 'planes' },
   pointStride: { min: 1, max: 8, step: 1, label: 'Point stride', group: 'volumes' },
   autoAttitude: { min: 0, max: 1, step: 1, label: 'Auto pitch/roll from depth', group: 'camera' },
+};
+
+export type TuningPresetId = 'laptop-desk' | 'phone-handheld' | 'tripod-room';
+
+export interface TuningPreset {
+  label: string;
+  description: string;
+  values: Partial<CameraTuning>;
+}
+
+export const TUNING_PRESETS: Record<TuningPresetId, TuningPreset> = {
+  'laptop-desk': {
+    label: 'Laptop / desk',
+    description: 'Laptop camera above the desk it looks along, roughly level.',
+    values: {
+      cameraHeightM: 0.45,
+      pitchDeg: 0,
+      fovYDeg: 50,
+      autoAttitude: 1,
+      ransacThresholdM: 0.05,
+      planeMinExtentM: 0.35,
+      clusterMinCount: 30,
+    },
+  },
+  'phone-handheld': {
+    label: 'Phone (handheld)',
+    description: 'Handheld phone at chest/eye height, angled down, moving.',
+    values: {
+      cameraHeightM: 1.3,
+      pitchDeg: -30,
+      fovYDeg: 60,
+      autoAttitude: 1,
+      depthSmoothing: 0.2,
+      clusterMinCount: 40,
+    },
+  },
+  'tripod-room': {
+    label: 'Tripod (room)',
+    description: 'Stationary tripod overlooking a room from a moderate height.',
+    values: {
+      cameraHeightM: 1.2,
+      pitchDeg: -15,
+      fovYDeg: 50,
+      autoAttitude: 1,
+      depthSmoothing: 0.5,
+      surfaceIntervalMs: 600,
+    },
+  },
 };
 
 const DEFAULT_KEY = 'reality-editor-camera:tuning';
@@ -228,6 +276,16 @@ export class TuningStore {
     this.current = { ...DEFAULT_TUNING };
     saveTuning(this.current, this.storage, this.key);
     this.notify(null);
+  }
+
+  /** Apply a named preset's values on top of the current tuning (persists, notifies with null). */
+  applyPreset(id: TuningPresetId): void {
+    this.patch(TUNING_PRESETS[id].values);
+  }
+
+  /** Reset a single parameter back to its default. */
+  resetKey(key: keyof CameraTuning): void {
+    this.set(key, DEFAULT_TUNING[key]);
   }
 
   subscribe(listener: TuningListener): () => void {

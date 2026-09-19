@@ -53,6 +53,8 @@ import { createFrameSource } from './frame-source';
 import { createPoseSource } from './pose';
 import { rayPlaneY } from './surfaces/floor-prior';
 import { WorkerSurfaceEstimator } from './surfaces/worker-estimator';
+import { SurfaceRegistry } from './surfaces/registry';
+import { SceneDebugOverlay } from './debug-overlay';
 import { PointerInputAdapter, intersectPlaneY, type PointerRay } from './input/pointer';
 import { StaticPoseSource } from './pose/static';
 import type { VisualPoseSource } from './pose/visual';
@@ -92,13 +94,19 @@ export interface CameraHandle {
   setCameraHeight(h: number): void;
   setFovY(rad: number): void;
   /** Renderer-side counts for tests/diagnostics (hull meshes drawn over the video, object views). */
-  renderStats(): { hullChildren: number; viewChildren: number };
+  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number };
   /** Live tunables (persisted in localStorage; `t` toggles the slider panel). */
   readonly tuning: TuningStore;
   /** World point the estimated depth sees at a canvas NDC position (snapped onto the surface below); null without depth. */
   pickWorld(ndcX: number, ndcY: number): Vec3 | null;
   /** Capture appearance + synthetic support plate for a discovered real object (tier D) so it can be moved. */
   prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }>;
+  /**
+   * One-click metric calibration: the thing seen at canvas NDC (ndcX, ndcY) is `distanceM`
+   * metres from the camera. Sets tuning.depthScale so the newest depth map agrees; returns
+   * the factor applied, or null when no model depth is available there.
+   */
+  calibrateAt(ndcX: number, ndcY: number, distanceM: number): number | null;
 }
 
 export interface CameraApp {
@@ -244,6 +252,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   scene.add(backgroundHull.group);
   const guideOverlay = new GuideOverlay();
   scene.add(guideOverlay.group);
+  const debugOverlay = new SceneDebugOverlay();
+  debugOverlay.setVisible(false);
+  scene.add(debugOverlay.group);
 
   // ---- Input ------------------------------------------------------------
   const interaction = new InteractionController(store);
@@ -259,7 +270,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     out.direction.y = rayDir.y;
     out.direction.z = rayDir.z;
   };
-  const pointer = new PointerInputAdapter({ element: canvas, store, rayFromNdc });
+  const pointer = new PointerInputAdapter({ element: canvas, store, rayFromNdc, depthPick: (x, y) => pickWorld(x, y) });
 
   const physics = createProxyPhysics();
   const physicsBridge = createPhysicsBridge(store, physics, conditions);
@@ -445,8 +456,54 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     depthFrames: 0,
     depthPublishedAgoMs: Infinity,
     depthFitMode: 'none',
+    depthScale: tuning.value.depthScale,
+    rollCorroborated: false,
+    getLines: () => CameraDiagnostics.lines(diagState),
   };
   const diagnostics = new CameraDiagnostics(container, !headless);
+  // One-line workflow hint under the HUD: what the next useful action is on this backend.
+  const hintEl = document.createElement('div');
+  hintEl.id = 'camera-hint';
+  hintEl.style.cssText = 'position:absolute;left:8px;bottom:8px;z-index:10;font:12px system-ui,sans-serif;color:#f2f2f5;background:rgba(0,0,0,0.55);padding:6px 10px;border-radius:6px;max-width:420px;pointer-events:none;';
+  hintEl.style.display = headless ? 'none' : 'block';
+  container.appendChild(hintEl);
+  let lastHint = '';
+  // `c`: calibrate depth scale from the object under the pointer (asks for its distance).
+  const onCalibrateKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'c' || e.ctrlKey || e.metaKey || e.altKey || headless) return;
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+    const answer = window.prompt('Distance from the camera to the thing under the pointer (metres):', '1.0');
+    const d = answer === null ? NaN : Number(answer);
+    if (!Number.isFinite(d) || d <= 0) return;
+    const factor = cameraHandle.calibrateAt(pointer.lastNdcX, pointer.lastNdcY, d);
+    hintEl.textContent = factor === null ? 'Calibration needs model depth under the pointer.' : `Depth scale set to x${factor.toFixed(2)}.`;
+    lastHint = hintEl.textContent ?? '';
+  };
+  window.addEventListener('keydown', onCalibrateKey);
+  const onOverlayKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'v' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+    debugOverlay.setVisible(!debugOverlay.group.visible);
+  };
+  window.addEventListener('keydown', onOverlayKey);
+  function workflowHint(): string {
+    const snap = store.current;
+    const sel = interaction.selectedId ? snap.objects[interaction.selectedId] : undefined;
+    if (!inSession) return 'Start the camera to begin.';
+    if (sel && sel.origin === 'physical') {
+      if (!sel.visible) return `${sel.userName} is deleted: Restore or Undo brings it back.`;
+      if (sel.tier === 'D') return `${sel.userName}: drag to move (tier D). To delete it, take it out of the picture, then press Capture plate.`;
+      if (sel.tier === 'B' || sel.tier === 'C') return `${sel.userName}: clean plate captured (tier ${sel.tier}); Delete hides it behind the captured background.`;
+      if (sel.tier === 'E') return `${sel.userName} has no support surface; only restore/undo.`;
+    }
+    if (sel) return `${sel.userName}: drag along the surface, wheel to lift, two fingers to scale/turn.`;
+    const real = Object.values(snap.objects).filter((o) => o.origin === 'physical').length;
+    if (real === 0 && surfaceEstimator.volumes.length > 0) return `${surfaceEstimator.volumes.length} real object(s) seen: press Discover to make them editable.`;
+    if (real === 0) return 'Spawn a cube, or point the camera at objects on a table/floor and press Discover.';
+    return 'Click an object to select it; drag to move. d: diagnostics, t: tuning, v: scene wireframes.';
+  }
   const tuningPanel = new TuningPanel(container, tuning, { visible: false });
   let lastDiagAt = -Infinity;
   let videoFrameCounter = 0;
@@ -507,16 +564,26 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     return point;
   }
 
+  /** Drop a world point onto the nearest detected horizontal surface below it (any distance), if one exists. */
+  function dropToSupport(p: Vec3): Vec3 {
+    const below = surfaceBelow(store.current, { x: p.x, y: p.y + 0.02, z: p.z });
+    return below ? { x: p.x, y: below.aabb.max.y, z: p.z } : p;
+  }
+
   function spawnTarget(): Vec3 {
-    const pw = pointer.pointerWorld;
-    if (pointer.state.right.active && pointer.hoverId === null) {
-      // Prefer what the depth sees under the pointer (a desk, a bed), else the ground plane.
+    // The last pointer position counts even after the pointer left the canvas to press a
+    // HUD button (owner report: spawn ignored the pointer because the hover track was gone).
+    const recentPointer = performance.now() - pointer.lastPointerAt < 15_000;
+    if (recentPointer) {
       const picked = pickWorld(pointer.lastNdcX, pointer.lastNdcY);
-      if (picked) return picked;
-      if (Math.abs(pw.y) < 0.01) return { x: pw.x, y: 0, z: pw.z };
+      if (picked) return dropToSupport(picked);
+      const ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
+      rayFromNdc(pointer.lastNdcX, pointer.lastNdcY, ray);
+      const ground = intersectPlaneY(ray, 0);
+      if (ground && Math.hypot(ground.x - ray.origin.x, ground.z - ray.origin.z) <= SPAWN_MAX_M) return dropToSupport(ground);
     }
     const centre = pickWorld(0, -0.2);
-    if (centre) return centre;
+    if (centre) return dropToSupport(centre);
     const pose = poseSource.pose;
     const fwd = quatRotateVec3(pose.rotation, { x: 0, y: 0, z: -1 });
     const hit = rayPlaneY(pose.position, fwd, 0);
@@ -767,28 +834,26 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     return { framesCaptured: frames.length };
   }
 
-  const registeredSurfaceSeenAt = new Map<string, number>();
-  const SURFACE_FORGET_MS = 3000;
+  // Persistent, smoothed registry between the flickering estimator and the store (surfaces/registry.ts).
+  const surfaceRegistry = new SurfaceRegistry({ keepAliveMs: 6000, smoothing: 0.3, minObservations: 2 });
+  let lastIngestedRunAt = -Infinity;
   function registerEstimatedSurfaces(now: number): void {
-    for (const est of surfaceEstimator.surfaces) {
-      registeredSurfaceSeenAt.set(est.surface.id, now);
-      const existing = store.current.surfaces[est.surface.id];
-      if (existing && existing.lastChanged === est.surface.lastChanged) continue;
+    // Only ingest a NEW estimator run (the same run re-ingested would count as extra observations).
+    if (surfaceEstimator.lastRunAt === lastIngestedRunAt && floorRegistered) return;
+    lastIngestedRunAt = surfaceEstimator.lastRunAt;
+    const delta = surfaceRegistry.ingest(surfaceEstimator.surfaces, now);
+    for (const surface of delta.register) {
       store.dispatch(
-        { intent: { kind: 'registerSurface', surface: est.surface }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+        { intent: { kind: 'registerSurface', surface }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
         conditions(),
       );
     }
-    // RANSAC results flicker; only forget a surface after it has been missing for a while.
-    for (const [id, seenAt] of registeredSurfaceSeenAt) {
-      if (now - seenAt < SURFACE_FORGET_MS) continue;
-      registeredSurfaceSeenAt.delete(id);
-      if (store.current.surfaces[id]) {
-        store.dispatch(
-          { intent: { kind: 'removeSurface', surfaceId: id }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
-          conditions(),
-        );
-      }
+    for (const id of delta.remove) {
+      if (!store.current.surfaces[id]) continue;
+      store.dispatch(
+        { intent: { kind: 'removeSurface', surfaceId: id }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+        conditions(),
+      );
     }
     floorRegistered = true;
   }
@@ -852,6 +917,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     if (!floorRegistered || now - lastSurfaceRegisterAt > 250) {
       lastSurfaceRegisterAt = now;
       registerEstimatedSurfaces(now);
+      if (debugOverlay.group.visible) debugOverlay.update(surfaceEstimator.surfaces, surfaceEstimator.volumes);
     }
 
     // Grab a downscaled frame every GRAB_INTERVAL_MS for optical flow (motion / tracking loss)
@@ -919,6 +985,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.depthFrames = ds.frames;
       diagState.depthPublishedAgoMs = Number.isFinite(ds.lastPublishedAt) ? now - ds.lastPublishedAt : Infinity;
       diagState.depthFitMode = ds.fitMode;
+      diagState.depthScale = tuning.value.depthScale;
+      diagState.rollCorroborated = surfaceEstimator.correction?.rollCorroborated ?? false;
       diagState.floorConfidence = surfaceEstimator.surfaces[0]?.confidence ?? 0;
       diagState.surfaceCount = Object.keys(frameSnapshot.surfaces).length;
       diagState.volumeCount = surfaceEstimator.volumes.length;
@@ -934,6 +1002,11 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.pointerWorld = pointer.state.right.active ? { x: pointer.pointerWorld.x, y: pointer.pointerWorld.y, z: pointer.pointerWorld.z } : null;
       diagState.error = ds.error ?? diagState.error;
       diagnostics.update(diagState);
+      const hint = workflowHint();
+      if (hint !== lastHint) {
+        lastHint = hint;
+        hintEl.textContent = hint;
+      }
       domHud.update(
         {
           tier: cond.tier,
@@ -1023,6 +1096,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       domHud.dispose();
       diagnostics.dispose();
       tuningPanel.dispose();
+      hintEl.remove();
+      window.removeEventListener('keydown', onCalibrateKey);
+      window.removeEventListener('keydown', onOverlayKey);
+      debugOverlay.dispose();
       disposeRenderer();
       video.remove();
       if (window.__realityEditor === handle) delete window.__realityEditor;
@@ -1057,11 +1134,40 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       frameSource.setFovY(rad);
     },
     renderStats() {
-      return { hullChildren: backgroundHull.group.children.length, viewChildren: views.group.children.length };
+      let appearanceActive = 0;
+      views.group.traverse((o) => {
+        if (o.name.startsWith('object-appearance:') && o.visible && o.children.length > 1) appearanceActive += 1;
+      });
+      return { hullChildren: backgroundHull.group.children.length, viewChildren: views.group.children.length, appearanceActive };
     },
     tuning,
     pickWorld,
     prepareRealObject,
+    calibrateAt(ndcX, ndcY, distanceM) {
+      const map = depthEstimator.latest;
+      if (!map || map.source !== 'monocular') return null;
+      const { u, v } = ndcToVideoUv(ndcX, ndcY);
+      if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+      const px = Math.min(map.width - 1, Math.floor(u * map.width));
+      const py = Math.min(map.height - 1, Math.floor(v * map.height));
+      // Median of a 5x5 patch: a single pixel of monocular depth is noisy.
+      const vals: number[] = [];
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const x = Math.min(map.width - 1, Math.max(0, px + dx));
+          const y = Math.min(map.height - 1, Math.max(0, py + dy));
+          const d = map.metric[y * map.width + x] as number;
+          if (d > 0) vals.push(d);
+        }
+      }
+      if (vals.length === 0 || !(distanceM > 0)) return null;
+      vals.sort((a, b) => a - b);
+      const current = vals[Math.floor(vals.length / 2)] as number;
+      // `current` already includes the previous scale; the new factor is relative to the unscaled fit.
+      const factor = (distanceM / current) * tuning.value.depthScale;
+      tuning.set('depthScale', factor);
+      return factor;
+    },
   };
 
   window.__realityEditor = handle;

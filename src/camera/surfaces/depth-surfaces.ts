@@ -55,7 +55,7 @@ export const DEFAULT_SURFACE_TUNING: Readonly<SurfaceTuning> = {
   clusterCellM: 0.05,
   clusterMinCount: 30,
   clusterMinHeightM: 0.04,
-  volumeMaxSideM: 2,
+  volumeMaxSideM: 1.2,
   surfaceIntervalMs: 400,
   pointStride: 2,
 };
@@ -94,10 +94,15 @@ export interface FrameCorrection {
   confidence: number;
   /** Inlier count behind the estimate (the app only trusts large planes). */
   inliers: number;
+  /** True when a side wall's normal agrees with the roll (within 3 degrees); otherwise roll is clamped to +-5 degrees. */
+  rollCorroborated: boolean;
   at: Millis;
 }
 
 const FLOOR_MIN_INLIER_FRACTION = 0.1;
+const ROLL_CLAMP_RAD = (5 * Math.PI) / 180;
+/** A volume's lowest seen point must be within this of its support plane. */
+const VOLUME_MAX_SUPPORT_GAP_M = 0.15;
 /** Monocular depth beyond this is too uncertain to fit planes on. */
 const MAX_POINT_DEPTH_M = 6;
 const TABLE_MIN_OFFSET_M = 0.08;
@@ -284,7 +289,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       // Distance from the camera (origin in camera space) to the plane n.p + d = 0.
       const heightM = Math.abs(dominant.d);
       const confidence = Math.min(1, dominant.inlierFraction * 3);
-      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, at: now };
+      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, rollCorroborated: false, at: now };
       // World frame from the dominant plane: pitch/roll from its normal, y = 0 on the plane,
       // yaw from the reported pose (depth cannot observe heading).
       const yaw = this.yawOf(depth.pose);
@@ -305,6 +310,22 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     const horizontal = mergeHorizontalPlanes(extracted.horizontal, Math.max(0.08, 2 * tuning.ransacThresholdM));
     const vertical = extracted.vertical;
     this.lastFits = { horizontal, vertical };
+
+    // Roll check: a sloped duvet biases the dominant plane's normal, so roll is only trusted when
+    // a SIDE wall (normal mostly along x) shows the same tilt; otherwise it is clamped to +-5 degrees.
+    if (this.correction && this.correction.at === now) {
+      const corr = this.correction;
+      let corroborated = false;
+      for (const fit of vertical) {
+        const n = fit.normal;
+        if (Math.abs(n.x) < 0.5) continue;
+        // Points are already in the corrected frame: a leftover tilt of a side wall's normal is residual roll.
+        const residual = Math.atan2(n.y * Math.sign(n.x), Math.abs(n.x));
+        if (Math.abs(residual) < (3 * Math.PI) / 180) corroborated = true;
+      }
+      corr.rollCorroborated = corroborated;
+      if (!corroborated) corr.rollRad = Math.max(-ROLL_CLAMP_RAD, Math.min(ROLL_CLAMP_RAD, corr.rollRad));
+    }
 
     // 3. Table surfaces: horizontal planes away from the ground with furniture-sized extent.
     const newTables: EstimatedSurface[] = [];
@@ -357,11 +378,13 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     // 5. Volumes above the ground and above each table.
     const clusterOpts = { cellM: tuning.clusterCellM, minHeightM: tuning.clusterMinHeightM, maxHeightM: tuning.volumeMaxSideM };
     const raw: { aabb: Aabb; count: number }[] = [];
-    const accept = (c: { aabb: Aabb; count: number }): boolean => {
+    const accept = (c: { aabb: Aabb; count: number; lowestY: number; supportY: number }): boolean => {
       const dx = c.aabb.max.x - c.aabb.min.x;
       const dy = c.aabb.max.y - c.aabb.min.y;
       const dz = c.aabb.max.z - c.aabb.min.z;
       if (dx > tuning.volumeMaxSideM || dy > tuning.volumeMaxSideM || dz > tuning.volumeMaxSideM) return false;
+      // Must actually stand on its support: a far wardrobe seen only from mid-height upward is not resting on it.
+      if (c.lowestY - c.supportY > VOLUME_MAX_SUPPORT_GAP_M) return false;
       if (c.count < tuning.clusterMinCount) return false;
       if (Math.min(dx, dz) < WALL_SLIVER_THIN_M && dy > WALL_SLIVER_TALL_M) return false; // wall fragment
       if (newTables.some((t) => xzOverlapFraction(c.aabb, t.surface.aabb) > VOLUME_TABLE_OVERLAP_FRACTION)) return false; // a table top

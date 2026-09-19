@@ -551,6 +551,8 @@ export interface VolumeCluster {
   aabb: Aabb;
   count: number;
   supportY: number;
+  /** Lowest point actually seen in the cluster (aabb.min.y is forced to the plane). */
+  lowestY: number;
 }
 
 export interface ClusterAbovePlaneOptions {
@@ -625,12 +627,14 @@ export function clusterAbovePlane(points: Float32Array, planeY: number, opts: Cl
 
     const min: Vec3 = { x: Infinity, y: planeY, z: Infinity };
     const max: Vec3 = { x: -Infinity, y: -Infinity, z: -Infinity };
+    let lowestY = Infinity;
     let count = 0;
     for (const key of componentCellKeys) {
       const idxs = cells.get(key) as number[];
       for (const idx of idxs) {
         const p = pointAt(points, idx);
         count += 1;
+        if (p.y < lowestY) lowestY = p.y;
         if (p.x < min.x) min.x = p.x;
         if (p.z < min.z) min.z = p.z;
         if (p.x > max.x) max.x = p.x;
@@ -641,7 +645,7 @@ export function clusterAbovePlane(points: Float32Array, planeY: number, opts: Cl
     min.y = planeY;
     if (!Number.isFinite(max.y)) continue;
 
-    clusters.push({ aabb: { min, max }, count, supportY: planeY });
+    clusters.push({ aabb: { min, max }, count, supportY: planeY, lowestY });
   }
 
   clusters.sort((a, b) => b.count - a.count);

@@ -7,13 +7,20 @@
  * Mapping (see docs/general-camera/architecture.md, "InputAdapter"):
  *  - The primary pointer is the RIGHT hand. Its ray is the pointer ray
  *    through the camera; its "grab point" rides that ray at the depth of the
- *    object under the pointer (or a default depth when nothing is hit).
+ *    object under the pointer (or the ground / a default depth otherwise).
  *  - Pressing = pinch. `selectStart`/`selectEnd` are true for exactly one
- *    `update()` call each, like real pinch edges.
- *  - While pressed, the grab point slides along the HORIZONTAL plane at the
- *    height it was grabbed at (plus a wheel-driven lift), so a dragged object
- *    glides over the floor/table it sits on instead of flying along the ray.
- *  - A second touch is the LEFT hand, pinching, also on that plane: the
+ *    `update()` call each, like real pinch edges. Pointer events are queued
+ *    and drained one PHASE per update (down | moves | up), so a flick whose
+ *    down, move and up all arrive within one frame still produces a grab, a
+ *    moved preview, and a committed release over three updates.
+ *  - While pressed, the grab point follows what the ESTIMATED DEPTH sees
+ *    under the pointer when a `depthPick` is supplied (so a dragged object
+ *    glides over the desk/bed the camera looks at). Without a depth hit it
+ *    slides along the horizontal plane at the grab height (plus a
+ *    wheel-driven lift), with runaway guards: a plane hit at a grazing angle
+ *    is clamped to 1.5x the grab distance and to MAX_DRAG_DISTANCE_M, and
+ *    the point moves at most MAX_STEP_M per update.
+ *  - A second touch is the LEFT hand, pinching, on the same plane: the
  *    controller's two-hand mode then turns finger distance/angle into
  *    scale/yaw exactly as it does for two real hands.
  *
@@ -21,8 +28,7 @@
  * distances make sense for a headset). A webcam looks at objects several
  * metres away, so the virtual hand's ray ORIGIN is moved forward along the
  * pointer ray to within `REACH_M` of the hit point; the direction is
- * unchanged so hit tests are identical. Hover for objects further than the
- * controller's reach would otherwise be impossible.
+ * unchanged so hit tests are identical.
  */
 import * as THREE from 'three';
 import type { SceneStore } from '@/core/api';
@@ -38,11 +44,15 @@ export interface PointerRay {
 /** Given a pointer position in normalized device coordinates (-1..1, y up), return the world ray. */
 export type RayFromNdc = (ndcX: number, ndcY: number, out: PointerRay) => void;
 
+/** World point the estimated depth sees at an NDC position (snapped to the surface below), or null. */
+export type DepthPick = (ndcX: number, ndcY: number) => Vec3 | null;
+
 export interface PointerInputOptions {
   /** Element that receives pointer events (the overlay canvas). */
   element: HTMLElement;
   store: SceneStore;
   rayFromNdc: RayFromNdc;
+  depthPick?: DepthPick;
   /** Depth (m) along the ray for the grab point when nothing is under the pointer. */
   defaultDepthM?: number;
   /** Metres of lift per wheel notch (100 delta units). */
@@ -55,6 +65,10 @@ const HOVER_MAX_DISTANCE_M = 30;
 const DEFAULT_DEPTH_M = 2.5;
 const WHEEL_LIFT_PER_NOTCH_M = 0.05;
 const MAX_LIFT_M = 2.5;
+/** Drag guards (owner report: a grazing plane hit sent a cube to z = -8.6 m). */
+const MAX_DRAG_DISTANCE_M = 6;
+const DRAG_DISTANCE_FACTOR = 1.5;
+const MAX_STEP_M = 0.5;
 
 function makeHandState(): HandState {
   return {
@@ -73,24 +87,38 @@ function makeHandState(): HandState {
   };
 }
 
-interface PointerTrack {
-  pointerId: number;
+interface PointerEventRecord {
+  kind: 'down' | 'move' | 'up';
   ndcX: number;
   ndcY: number;
+}
+
+interface PointerTrack {
+  pointerId: number;
+  /** NDC applied on the last update. */
+  ndcX: number;
+  ndcY: number;
+  /** Queued events, drained one phase per update. */
+  queue: PointerEventRecord[];
   down: boolean;
-  /** Edge flags consumed by the next update(). */
-  pendingDown: boolean;
-  pendingUp: boolean;
   /** Height of the drag plane while pressed (world y), null while hovering. */
   planeY: number | null;
+  /** Distance camera->grab point at grab start; drag hits are clamped relative to it. */
+  grabDistance: number;
   /** Depth along the ray used when the plane cannot be hit. */
   fallbackDepth: number;
+  /** Last grab point handed to the controller (for the per-update step clamp). */
+  lastPoint: Vec3 | null;
+  /** Height of the grab point above the surface the depth saw under it at grab start. */
+  grabOffsetY: number;
   /** Touch pointers vanish on lift (no hover); a mouse keeps hovering. */
   touch: boolean;
+  /** True once the track saw its 'up' and has no more queued events. */
+  finished: boolean;
 }
 
 function makeTrack(pointerId: number, touch: boolean): PointerTrack {
-  return { pointerId, ndcX: 0, ndcY: 0, down: false, pendingDown: false, pendingUp: false, planeY: null, fallbackDepth: DEFAULT_DEPTH_M, touch };
+  return { pointerId, ndcX: 0, ndcY: 0, queue: [], down: false, planeY: null, grabDistance: DEFAULT_DEPTH_M, fallbackDepth: DEFAULT_DEPTH_M, lastPoint: null, grabOffsetY: 0, touch, finished: false };
 }
 
 /**
@@ -109,6 +137,29 @@ export function intersectPlaneY(ray: PointerRay, planeY: number): Vec3 | null {
   };
 }
 
+/** Clamp `point` to at most `maxDist` from `origin` along the origin->point direction. Exported for tests. */
+export function clampDistance(origin: Vec3, point: Vec3, maxDist: number): Vec3 {
+  const dx = point.x - origin.x;
+  const dy = point.y - origin.y;
+  const dz = point.z - origin.z;
+  const d = Math.hypot(dx, dy, dz);
+  if (d <= maxDist || d < 1e-9) return point;
+  const k = maxDist / d;
+  return { x: origin.x + dx * k, y: origin.y + dy * k, z: origin.z + dz * k };
+}
+
+/** Limit the move from `prev` to `next` to `maxStep` metres. Exported for tests. */
+export function clampStep(prev: Vec3 | null, next: Vec3, maxStep: number): Vec3 {
+  if (!prev) return next;
+  const dx = next.x - prev.x;
+  const dy = next.y - prev.y;
+  const dz = next.z - prev.z;
+  const d = Math.hypot(dx, dy, dz);
+  if (d <= maxStep) return next;
+  const k = maxStep / d;
+  return { x: prev.x + dx * k, y: prev.y + dy * k, z: prev.z + dz * k };
+}
+
 export class PointerInputAdapter {
   readonly state: InputState = { left: makeHandState(), right: makeHandState() };
 
@@ -118,13 +169,16 @@ export class PointerInputAdapter {
   hoverId: string | null = null;
   /** Wheel-driven lift applied to the drag plane (m). */
   liftM = 0;
-  /** NDC of the primary pointer on the last update (0,0 before any event). */
+  /** NDC of the primary pointer on the last update; kept after the pointer leaves the canvas (0,0 before any event). */
   lastNdcX = 0;
   lastNdcY = 0;
+  /** performance.now() of the last primary pointer event; -Infinity before any. */
+  lastPointerAt = -Infinity;
 
   private readonly element: HTMLElement;
   private readonly store: SceneStore;
   private readonly rayFromNdc: RayFromNdc;
+  private readonly depthPick: DepthPick | null;
   private readonly defaultDepth: number;
   private readonly wheelLift: number;
   private readonly tracks: PointerTrack[] = [];
@@ -135,6 +189,7 @@ export class PointerInputAdapter {
     this.element = opts.element;
     this.store = opts.store;
     this.rayFromNdc = opts.rayFromNdc;
+    this.depthPick = opts.depthPick ?? null;
     this.defaultDepth = opts.defaultDepthM ?? DEFAULT_DEPTH_M;
     this.wheelLift = opts.wheelLiftPerNotchM ?? WHEEL_LIFT_PER_NOTCH_M;
 
@@ -178,7 +233,7 @@ export class PointerInputAdapter {
   private readonly onPointerLeave = (e: PointerEvent): void => {
     // A hovering mouse leaving the canvas stops hovering; a pressed pointer is captured and keeps dragging.
     const track = this.tracks.find((t) => t.pointerId === e.pointerId);
-    if (track && !track.down) this.removeTrack(track);
+    if (track && !track.down && track.queue.length === 0) this.removeTrack(track);
   };
 
   private readonly onWheel = (e: WheelEvent): void => {
@@ -203,24 +258,58 @@ export class PointerInputAdapter {
       track = makeTrack(pointerId, touch);
       this.tracks.push(track);
     }
-    track.ndcX = (x / width) * 2 - 1;
-    track.ndcY = -((y / height) * 2 - 1);
-    if (kind === 'down') {
-      if (!track.down) {
-        track.down = true;
-        track.pendingDown = true;
-      }
-    } else if (kind === 'up') {
-      if (track.down) {
-        track.down = false;
-        track.pendingUp = true;
+    const ndcX = (x / width) * 2 - 1;
+    const ndcY = -((y / height) * 2 - 1);
+    if (track === this.tracks[0]) {
+      this.lastNdcX = ndcX;
+      this.lastNdcY = ndcY;
+      this.lastPointerAt = performance.now();
+    }
+    if (kind === 'move') {
+      // Coalesce consecutive moves so the queue never grows with mouse-move spam.
+      const last = track.queue[track.queue.length - 1];
+      if (last && last.kind === 'move') {
+        last.ndcX = ndcX;
+        last.ndcY = ndcY;
+        return;
       }
     }
+    track.queue.push({ kind, ndcX, ndcY });
   }
 
   private removeTrack(track: PointerTrack): void {
     const i = this.tracks.indexOf(track);
     if (i >= 0) this.tracks.splice(i, 1);
+  }
+
+  /**
+   * Drain ONE phase of a track's queue: a 'down' (alone), a run of 'move's
+   * (collapsed to the last), or an 'up' (alone). Returns the edge produced.
+   */
+  private drain(track: PointerTrack): 'down' | 'up' | null {
+    const first = track.queue[0];
+    if (!first) return null;
+    if (first.kind === 'down') {
+      track.queue.shift();
+      track.ndcX = first.ndcX;
+      track.ndcY = first.ndcY;
+      if (track.down) return null; // duplicate down
+      track.down = true;
+      return 'down';
+    }
+    if (first.kind === 'up') {
+      track.queue.shift();
+      track.ndcX = first.ndcX;
+      track.ndcY = first.ndcY;
+      if (!track.down) return null;
+      track.down = false;
+      return 'up';
+    }
+    let last = first;
+    while (track.queue[0] && track.queue[0].kind === 'move') last = track.queue.shift()!;
+    track.ndcX = last.ndcX;
+    track.ndcY = last.ndcY;
+    return null;
   }
 
   /** Call once per rendered frame, before `InteractionController.update(state, ...)`. */
@@ -231,11 +320,11 @@ export class PointerInputAdapter {
     this.updateHand(this.state.left, secondary, false);
 
     // Drop released secondary pointers once their selectEnd edge has been delivered.
-    for (let i = this.tracks.length - 1; i >= 0; i--) {
+    for (let i = this.tracks.length - 1; i >= 1; i--) {
       const t = this.tracks[i]!;
-      if (!t.down && !t.pendingUp && !t.pendingDown && i > 0) this.tracks.splice(i, 1);
+      if (!t.down && t.queue.length === 0) this.tracks.splice(i, 1);
     }
-    if (primary && !primary.down && !primary.pendingUp && !primary.pendingDown) {
+    if (primary && !primary.down && primary.queue.length === 0) {
       // Reset the lift once a drag ends so the next grab starts on its own plane.
       this.liftM = 0;
       // A touch pointer that lifted is gone (no hover); a mouse keeps hovering.
@@ -255,21 +344,32 @@ export class PointerInputAdapter {
       return;
     }
 
+    const edge = this.drain(track);
     const ray = this.ray;
     this.rayFromNdc(track.ndcX, track.ndcY, ray);
 
     // Where along the ray is the grab point this frame?
     let point: Vec3 | null = null;
     let hitId: string | null = null;
-    if (track.down && track.planeY !== null) {
-      point = intersectPlaneY(ray, track.planeY + this.liftM);
-      if (!point) {
-        point = {
-          x: ray.origin.x + ray.direction.x * track.fallbackDepth,
-          y: ray.origin.y + ray.direction.y * track.fallbackDepth,
-          z: ray.origin.z + ray.direction.z * track.fallbackDepth,
-        };
+    const dragging = track.down && edge !== 'down' && track.planeY !== null;
+    if (dragging) {
+      point = this.depthPick ? this.depthPick(track.ndcX, track.ndcY) : null;
+      if (point) {
+        // Depth hit: the grab point rides at the same height above that surface as it was
+        // grabbed above the surface under it, so the object glides onto a desk or bed.
+        point = { x: point.x, y: point.y + track.grabOffsetY + this.liftM, z: point.z };
+      } else {
+        point = intersectPlaneY(ray, (track.planeY ?? 0) + this.liftM);
+        if (!point) {
+          point = {
+            x: ray.origin.x + ray.direction.x * track.fallbackDepth,
+            y: ray.origin.y + ray.direction.y * track.fallbackDepth,
+            z: ray.origin.z + ray.direction.z * track.fallbackDepth,
+          };
+        }
+        point = clampDistance(ray.origin, point, Math.min(MAX_DRAG_DISTANCE_M, track.grabDistance * DRAG_DISTANCE_FACTOR));
       }
+      point = clampStep(track.lastPoint, point, MAX_STEP_M);
     } else {
       const hits = raycastProxies(this.store.current, ray.origin, ray.direction, HOVER_MAX_DISTANCE_M);
       const hit = hits[0];
@@ -278,8 +378,9 @@ export class PointerInputAdapter {
         point = hit.point;
         track.fallbackDepth = hit.distance;
       } else {
-        // Nothing under the pointer: rest the hand on the floor plane if the ray reaches it, else at the default depth.
-        point = intersectPlaneY(ray, 0);
+        // Nothing under the pointer: rest the hand on what the depth sees, the ground plane, or the default depth.
+        point = this.depthPick ? this.depthPick(track.ndcX, track.ndcY) : null;
+        if (!point) point = intersectPlaneY(ray, 0);
         if (!point) {
           point = {
             x: ray.origin.x + ray.direction.x * this.defaultDepth,
@@ -289,11 +390,16 @@ export class PointerInputAdapter {
         }
         track.fallbackDepth = this.defaultDepth;
       }
-      if (track.pendingDown) {
-        // Grab starts here: remember the plane the drag slides on.
+      if (edge === 'down') {
+        // Grab starts here: remember the plane the drag slides on and how far away it was.
         track.planeY = point.y;
+        track.grabDistance = Math.max(0.3, Math.hypot(point.x - ray.origin.x, point.y - ray.origin.y, point.z - ray.origin.z));
+        const under = this.depthPick ? this.depthPick(track.ndcX, track.ndcY) : null;
+        track.grabOffsetY = Math.max(0, point.y - (under ? under.y : 0));
+        track.lastPoint = null;
       }
     }
+    track.lastPoint = point;
 
     hand.active = true;
     hand.confidence = 1;
@@ -301,13 +407,9 @@ export class PointerInputAdapter {
     hand.position.set(point.x, point.y, point.z);
     hand.quaternion.identity();
     hand.pinching = track.down;
-    if (track.pendingDown) {
-      hand.selectStart = true;
-      track.pendingDown = false;
-    }
-    if (track.pendingUp) {
+    if (edge === 'down') hand.selectStart = true;
+    if (edge === 'up') {
       hand.selectEnd = true;
-      track.pendingUp = false;
       track.planeY = null;
     }
 
@@ -324,8 +426,6 @@ export class PointerInputAdapter {
     if (primary) {
       this.pointerWorld.set(point.x, point.y, point.z);
       this.hoverId = hitId;
-      this.lastNdcX = track.ndcX;
-      this.lastNdcY = track.ndcY;
     }
   }
 

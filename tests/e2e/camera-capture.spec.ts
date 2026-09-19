@@ -72,6 +72,8 @@ test('injected depth yields a floor and a volume; discovery, capped capture, and
     objectId,
   );
   expect(moved.ok).toBe(true);
+  // The moved copy renders its captured appearance (depth mesh from the live RGB-D frame), not a box.
+  await expect.poll(async () => evalCam(() => window.__camera!.renderStats().appearanceActive), { timeout: 5_000 }).toBeGreaterThan(0);
   const early = await evalCam((id) => window.__cameraTestHelpers!.dispatchIntent({ kind: 'delete', objectId: id }), objectId);
   expect(early.ok).toBe(false);
   const undo = await evalCam(() => window.__cameraTestHelpers!.dispatchIntent({ kind: 'undo' }));

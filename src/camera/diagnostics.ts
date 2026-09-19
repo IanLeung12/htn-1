@@ -47,6 +47,11 @@ export interface CameraDiagnosticsState {
   depthFrames: number;
   depthPublishedAgoMs: number;
   depthFitMode: string;
+  /** Tuning depth scale multiplier in force. */
+  depthScale: number;
+  rollCorroborated: boolean;
+  /** The same lines the panel draws, for scripting (window.__camera.diagnostics.getLines()). */
+  getLines(): string[];
 }
 
 function fmtMs(v: number): string {
@@ -95,22 +100,26 @@ export class CameraDiagnostics {
 
   update(s: CameraDiagnosticsState): void {
     if (!this.visible) return;
+    this.pre.textContent = CameraDiagnostics.lines(s).join('\n');
+  }
+
+  static lines(s: CameraDiagnosticsState): string[] {
     const lines = [
       `camera   ${s.source} ${s.videoReady ? s.videoSize : 'starting'} ${s.videoReady ? `${s.videoFps.toFixed(0)} fps` : ''}`,
       `pose     ${s.poseMode} conf ${s.poseConfidence.toFixed(2)} ${s.trackingOk ? 'tracking' : 'LOST'} age ${fmtMs(s.poseSampleAgeMs)}`,
       `frame    h ${s.cameraHeightM.toFixed(2)} m  fovY ${s.fovYDeg.toFixed(0)} deg`,
       `depth    ${s.depthState} ${s.depthBackend}${s.depthModel ? ` ${s.depthModel.split('/').pop()}` : ''}`,
       `         infer ${fmtMs(s.depthInferenceMs)} age ${fmtMs(s.depthAgeMs)} conf ${s.depthConfidence.toFixed(2)}`,
-      `         frames ${s.depthFrames} published ${fmtMs(s.depthPublishedAgoMs)} ago  scale ${s.depthFitMode}`,
-      `ground   conf ${s.floorConfidence.toFixed(2)}  est pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}`,
+      `         frames ${s.depthFrames} published ${fmtMs(s.depthPublishedAgoMs)} ago  scale ${s.depthFitMode} x${s.depthScale.toFixed(2)}`,
+      `ground   conf ${s.floorConfidence.toFixed(2)}  est pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}${s.rollCorroborated ? ' (wall-confirmed)' : ' (clamped)'}`,
       `scene    surfaces ${s.surfaceCount} (tables ${s.tables}, walls ${s.walls})  volumes ${s.volumeCount}  ransac ${s.surfaceRunMs.toFixed(0)} ms  motion ${s.motionPx.toFixed(1)} px`,
       `tier cap ${s.tierCap} (estimated depth)  quality tier ${s.qualityTier}`,
       `loop     p95 ${s.frameP95.toFixed(1)} ms  app ${s.appMs.toFixed(2)} ms  objects ${s.objectCount}`,
       `pointer  ${s.hoverId ?? '-'}${s.pointerWorld ? ` @ ${s.pointerWorld.x.toFixed(2)},${s.pointerWorld.y.toFixed(2)},${s.pointerWorld.z.toFixed(2)}` : ''}`,
     ];
     if (s.error) lines.push(`error    ${s.error}`);
-    lines.push('d: hide diagnostics   t: tuning panel');
-    this.pre.textContent = lines.join('\n');
+    lines.push('d: hide diagnostics   t: tuning panel   v: wireframes');
+    return lines;
   }
 
   dispose(): void {

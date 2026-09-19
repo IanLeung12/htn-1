@@ -110,6 +110,29 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
 - Bug 3 (fixed): 20 degree roll from a small noisy fit. Attitude is learned only from planes
   with > 2000 inliers and confidence > 0.6, smoothed with a 2 s time constant.
 
+### Second retest (dab8426) and fixes
+
+- Scale anchor: default `cameraHeightM` is now 0.45 (laptop camera to the desk/bed plane
+  it looks along) and `pitchDeg` -6; presets (`t` panel: laptop-desk, phone-handheld,
+  tripod-room) set height/pitch/FOV per setup; `c` key = "the thing under the pointer is X m
+  away" (`window.__camera.calibrateAt(ndcX, ndcY, m)` sets `depthScale`); diagnostics show
+  the scale mode and factor.
+- Surfaces flickered run to run: `SurfaceRegistry` (`surfaces/registry.ts`) matches
+  estimates to remembered surfaces by geometry, smooths boxes (EMA 0.3), publishes after 2
+  observations, keeps them 6 s after they vanish, and re-registers only on > 2 cm moves.
+- Roll: only trusted when a side wall's normal shows the same tilt (within 3 degrees);
+  otherwise clamped to +-5 degrees (diagnostics: "wall-confirmed"/"clamped").
+- `window.__camera.diagnostics.getLines()` returns the panel's lines.
+- Drag runaway: the drag now follows the depth hit under the pointer (object glides onto
+  the desk/bed) and otherwise clamps plane hits to 1.5x the grab distance / 6 m and 0.5 m
+  per update. Pointer events are queued and drained one phase per update, so a flick's
+  down/move/up in one frame still grabs, previews, and commits.
+- Spawn uses the last pointer position even after the pointer left the canvas to press a
+  HUD button, and drops onto the nearest detected horizontal surface below.
+- Volumes must stand on their support (lowest seen point within 0.15 m of the plane) and
+  default `volumeMaxSideM` is 1.2 (the far wardrobe is gone).
+- `v` toggles a wireframe overlay of surfaces/volumes (`src/camera/debug-overlay.ts`).
+
 ## Next steps
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,

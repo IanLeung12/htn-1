@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createSceneStore } from '@/core';
 import type { EditableObject, Pose, RuntimeConditions } from '@/core/types';
 import { InteractionController } from '@/app/interaction';
-import { intersectPlaneY, PointerInputAdapter, type PointerRay } from '@/camera/input/pointer';
+import { clampDistance, clampStep, intersectPlaneY, PointerInputAdapter, type PointerRay } from '@/camera/input/pointer';
 
 /** Minimal element stand-in: the adapter only needs listeners, a rect, and a style bag. */
 function fakeElement(width = 800, height = 600) {
@@ -180,6 +180,69 @@ describe('PointerInputAdapter + InteractionController', () => {
     adapter.update();
     adapter.update();
     expect(adapter.state.right.active).toBe(false);
+    adapter.dispose();
+  });
+});
+
+describe('drag guards and flicks', () => {
+  it('clamps grazing plane hits and per-update steps', () => {
+    const clamped = clampDistance({ x: 0, y: 1, z: 0 }, { x: 0, y: 0, z: -20 }, 3);
+    expect(Math.hypot(clamped.x, clamped.y - 1, clamped.z)).toBeCloseTo(3, 9);
+    expect(clamped.z).toBeCloseTo(-60 / Math.hypot(1, 20), 9);
+    expect(clampStep({ x: 0, y: 0, z: 0 }, { x: 2, y: 0, z: 0 }, 0.5)).toEqual({ x: 0.5, y: 0, z: 0 });
+    expect(clampStep(null, { x: 2, y: 0, z: 0 }, 0.5)).toEqual({ x: 2, y: 0, z: 0 });
+  });
+
+  it('a down/move/up within one frame still grabs, moves, and commits over three updates', () => {
+    const store = createSceneStore();
+    const start: Pose = { position: { x: 0, y: 0.08, z: -2 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    store.dispatch({ intent: { kind: 'spawn', object: cube('c', start) }, source: 'test', issuedAt: 0, basedOnVersion: 0 }, cond());
+    const el = fakeElement();
+    const adapter = new PointerInputAdapter({ element: el as unknown as HTMLElement, store, rayFromNdc });
+    const interaction = new InteractionController(store);
+    const px = pixelForWorld({ x: 0, y: 0.16, z: -2 });
+    adapter.inject('down', px.x, px.y);
+    adapter.inject('move', px.x + 40, px.y);
+    adapter.inject('move', px.x + 80, px.y);
+    adapter.inject('up', px.x + 80, px.y);
+    adapter.update();
+    expect(adapter.state.right.selectStart).toBe(true);
+    expect(adapter.state.right.selectEnd).toBe(false);
+    interaction.update(adapter.state, cond());
+    expect(interaction.selectedId).toBe('c');
+    adapter.update();
+    expect(adapter.state.right.selectStart).toBe(false);
+    expect(adapter.state.right.pinching).toBe(true);
+    interaction.update(adapter.state, cond());
+    expect(store.current.preview?.objectId).toBe('c');
+    adapter.update();
+    expect(adapter.state.right.selectEnd).toBe(true);
+    interaction.update(adapter.state, cond());
+    expect(store.current.objects['c']!.currentPose.position.x).toBeGreaterThan(0.05);
+    expect(store.current.preview).toBeUndefined();
+    adapter.dispose();
+  });
+
+  it('a runaway plane hit cannot send the object far beyond the grab distance', () => {
+    const store = createSceneStore();
+    const start: Pose = { position: { x: 0, y: 0.08, z: -2 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
+    store.dispatch({ intent: { kind: 'spawn', object: cube('c', start) }, source: 'test', issuedAt: 0, basedOnVersion: 0 }, cond());
+    const el = fakeElement();
+    const adapter = new PointerInputAdapter({ element: el as unknown as HTMLElement, store, rayFromNdc });
+    const px = pixelForWorld({ x: 0, y: 0.16, z: -2 });
+    adapter.inject('move', px.x, px.y);
+    adapter.update();
+    adapter.inject('down', px.x, px.y);
+    adapter.update();
+    // Drag the pointer up towards the horizon: the plane hit would be tens of metres away.
+    for (let i = 0; i < 30; i++) {
+      adapter.inject('move', px.x + 240, px.y - 50 - i * 4);
+      adapter.update();
+    }
+    const p = adapter.state.right.position;
+    const dist = Math.hypot(p.x - CAM.x, p.y - CAM.y, p.z - CAM.z);
+    expect(dist).toBeLessThanOrEqual(1.5 * Math.hypot(0, 0.16 - CAM.y, -2) + 1e-6);
+    expect(p.z).toBeGreaterThan(-6);
     adapter.dispose();
   });
 });

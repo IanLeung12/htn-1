@@ -80,7 +80,7 @@ function installHelpers(): void {
 }
 
 export function cameraUrl(params: Record<string, string> = {}): string {
-  const search = new URLSearchParams({ headless: '1', autostart: '1', source: 'camera', pose: 'static', depth: 'prior', ...params });
+  const search = new URLSearchParams({ headless: '1', autostart: '1', source: 'camera', pose: 'static', depth: 'prior', height: '1.1', pitch: '-20', ...params });
   return `/camera.html?${search.toString()}`;
 }
 

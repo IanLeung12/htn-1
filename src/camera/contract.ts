@@ -208,8 +208,8 @@ export interface CameraAppConfig {
 
 export const DEFAULT_CAMERA_CONFIG: Readonly<CameraAppConfig> = {
   source: 'camera',
-  cameraHeightM: 1.1,
-  pitchRad: -0.35,
+  cameraHeightM: 0.45,
+  pitchRad: -0.1,
   fovY: (50 * Math.PI) / 180,
   pose: 'auto',
   depth: 'auto',

@@ -3,7 +3,9 @@
  * the diagnostics panel (src/camera/diagnostics.ts) but bottom-right,
  * interactive, and grouped by TUNING_SPEC's `group`. Toggle with the `t` key.
  */
-import { TUNING_SPEC, type CameraTuning, type TuningStore } from './tuning';
+import { TUNING_PRESETS, TUNING_SPEC, type CameraTuning, type TuningPresetId, type TuningStore } from './tuning';
+
+const PRESET_ORDER: readonly TuningPresetId[] = ['laptop-desk', 'phone-handheld', 'tripod-room'];
 
 const GROUP_LABELS: Record<string, string> = {
   camera: 'Camera',
@@ -57,6 +59,19 @@ export class TuningPanel {
     title.textContent = 'camera tuning (t to hide)';
     title.style.cssText = 'font-weight:bold;margin-bottom:6px;';
     this.root.appendChild(title);
+
+    const presetRow = document.createElement('div');
+    presetRow.style.cssText = 'display:flex;gap:4px;margin-bottom:8px;';
+    for (const id of PRESET_ORDER) {
+      const preset = TUNING_PRESETS[id];
+      const btn = document.createElement('button');
+      btn.textContent = preset.label;
+      btn.title = preset.description;
+      btn.style.cssText = 'flex:1 1 0;font:inherit;padding:4px 2px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;';
+      btn.addEventListener('click', () => this.store.applyPreset(id));
+      presetRow.appendChild(btn);
+    }
+    this.root.appendChild(presetRow);
 
     for (const group of GROUP_ORDER) {
       const heading = document.createElement('div');
@@ -130,6 +145,13 @@ export class TuningPanel {
       range.value = String(this.store.value[key]);
       number.value = String(this.store.value[key]);
     });
+
+    const resetKeyBtn = document.createElement('button');
+    resetKeyBtn.textContent = 'x';
+    resetKeyBtn.title = `Reset ${spec.label} to default`;
+    resetKeyBtn.style.cssText = 'flex:0 0 16px;width:16px;height:16px;line-height:1;font:inherit;padding:0;cursor:pointer;';
+    resetKeyBtn.addEventListener('click', () => this.store.resetKey(key));
+    row.appendChild(resetKeyBtn);
 
     this.rows.set(key, { range, number });
     return row;

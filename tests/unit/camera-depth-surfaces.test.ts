@@ -138,15 +138,15 @@ describe('DepthSurfaceEstimator', () => {
     const surfacesBefore = est.surfaces;
 
     est.update(depth, pose, 1000);
-
     expect(est.surfaces[0]!.origin).toBe('ransac');
     expect(Math.abs(est.cameraHeightM - CAMERA_HEIGHT_M)).toBeLessThan(0.05);
 
     expect(est.volumes.length).toBeGreaterThan(0);
     const vol = est.volumes.find((v) => {
       const dx = Math.abs(v.pose.position.x - BOX_CENTER.x);
+      // A single view only sees the front and top faces, so the cluster centre sits nearer than the true centre.
       const dz = Math.abs(v.pose.position.z - BOX_CENTER.z);
-      return dx < 0.1 && dz < 0.1;
+      return dx < 0.1 && dz < 0.15;
     });
     expect(vol).toBeDefined();
     expect(vol!.halfExtents.y * 2).toBeGreaterThan(0.2);
