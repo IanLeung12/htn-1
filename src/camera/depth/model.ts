@@ -155,7 +155,9 @@ export class ModelDepthEstimator implements DepthEstimator {
       if (prev) {
         fit = fitInverseDepthToFloor(inverse, prev.metric, { stride: 2 });
         mode = 'temporal';
-        if (fit) confidence = Math.min(prev.confidence, 0.6) * Math.max(0.5, fit.inlierFraction);
+        // Keep (capped) confidence rather than decaying it every temporal step: a level camera
+        // never sees the ground again, and a geometric decay would silently disable picking.
+        if (fit) confidence = Math.min(prev.confidence, 0.6);
       }
       if (!fit && this.lastFit) {
         fit = this.lastFit;

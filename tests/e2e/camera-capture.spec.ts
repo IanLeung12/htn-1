@@ -19,7 +19,7 @@ function syntheticDepth(withBox: boolean): { pose: Pose; metric: number[] } {
 
 test.use({ cameraParams: { depth: 'injected' } });
 
-test('injected depth yields a floor and a volume; discovery, capped capture, and delete with hull', async ({ evalCam }) => {
+test('injected depth yields a floor and a volume; discovery, capped capture, and delete with hull', async ({ camPage, evalCam }) => {
   await expect.poll(async () => evalCam(() => window.__realityEditor!.inSession), { timeout: 15_000 }).toBe(true);
 
   const withBox = syntheticDepth(true);
@@ -49,6 +49,28 @@ test('injected depth yields a floor and a volume; discovery, capped capture, and
   expect(est.volume.half.y * 2).toBeGreaterThan(0.2);
   expect(est.volume.half.y * 2).toBeLessThan(0.45);
 
+  // Spawn at the pointer: hover a floor pixel (bottom-left), press the HUD button, and the cube
+  // lands where the depth pick said, dropped onto the surface below (the ground).
+  const pointerSpot = await evalCam(() => {
+    const canvas = document.querySelector('#app canvas') as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+    return { x: rect.left + rect.width * 0.3, y: rect.top + rect.height * 0.85 };
+  });
+  await camPage.mouse.move(pointerSpot.x, pointerSpot.y);
+  await camPage.waitForTimeout(150);
+  const expectedSpot = await evalCam(({ x, y }) => window.__camera!.worldAtPixel(x, y), pointerSpot);
+  await evalCam(() => {
+    const btn = [...document.querySelectorAll<HTMLButtonElement>('#re-hud button')].find((b) => b.textContent === 'Spawn cube')!;
+    btn.click();
+  });
+  const spawnedAtPointer = await evalCam(() => {
+    const objs = Object.values(window.__realityEditor!.store.current.objects).filter((o) => o.origin === 'spawned');
+    return objs[objs.length - 1]!.currentPose.position;
+  });
+  expect(Math.hypot(spawnedAtPointer.x - expectedSpot.x, spawnedAtPointer.z - expectedSpot.z)).toBeLessThan(0.05);
+  expect(Math.abs(spawnedAtPointer.y - (expectedSpot.y + 0.08))).toBeLessThan(0.03);
+  await evalCam(() => window.__cameraTestHelpers!.dispatchIntent({ kind: 'undo' }));
+
   // Discovery registers it against the ground surface, approves it, captures its appearance from
   // the live frame and synthesizes a support plate (tier D: movable, not deletable).
   const ids = await evalCam(() => window.__realityEditor!.runCandidateDiscovery());
@@ -73,7 +95,7 @@ test('injected depth yields a floor and a volume; discovery, capped capture, and
   );
   expect(moved.ok).toBe(true);
   // The moved copy renders its captured appearance (depth mesh from the live RGB-D frame), not a box.
-  await expect.poll(async () => evalCam(() => window.__camera!.renderStats().appearanceActive), { timeout: 5_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => evalCam(() => window.__camera!.renderStats().impostors), { timeout: 5_000 }).toBeGreaterThan(0);
   const early = await evalCam((id) => window.__cameraTestHelpers!.dispatchIntent({ kind: 'delete', objectId: id }), objectId);
   expect(early.ok).toBe(false);
   const undo = await evalCam(() => window.__cameraTestHelpers!.dispatchIntent({ kind: 'undo' }));

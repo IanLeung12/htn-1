@@ -50,6 +50,11 @@ export interface CameraDiagnosticsState {
   /** Tuning depth scale multiplier in force. */
   depthScale: number;
   rollCorroborated: boolean;
+  /** Attitude actually applied to the static pose (deg). */
+  appliedPitchDeg: number;
+  appliedRollDeg: number;
+  /** Why the raw estimate is (not) being applied. */
+  attitudeNote: string;
   /** The same lines the panel draws, for scripting (window.__camera.diagnostics.getLines()). */
   getLines(): string[];
 }
@@ -111,7 +116,8 @@ export class CameraDiagnostics {
       `depth    ${s.depthState} ${s.depthBackend}${s.depthModel ? ` ${s.depthModel.split('/').pop()}` : ''}`,
       `         infer ${fmtMs(s.depthInferenceMs)} age ${fmtMs(s.depthAgeMs)} conf ${s.depthConfidence.toFixed(2)}`,
       `         frames ${s.depthFrames} published ${fmtMs(s.depthPublishedAgoMs)} ago  scale ${s.depthFitMode} x${s.depthScale.toFixed(2)}`,
-      `ground   conf ${s.floorConfidence.toFixed(2)}  est pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}${s.rollCorroborated ? ' (wall-confirmed)' : ' (clamped)'}`,
+      `ground   conf ${s.floorConfidence.toFixed(2)}  raw pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}${s.rollCorroborated ? ' (wall-confirmed)' : ' (roll clamped)'}`,
+      `attitude applied pitch ${s.appliedPitchDeg.toFixed(1)} roll ${s.appliedRollDeg.toFixed(1)}  ${s.attitudeNote}`,
       `scene    surfaces ${s.surfaceCount} (tables ${s.tables}, walls ${s.walls})  volumes ${s.volumeCount}  ransac ${s.surfaceRunMs.toFixed(0)} ms  motion ${s.motionPx.toFixed(1)} px`,
       `tier cap ${s.tierCap} (estimated depth)  quality tier ${s.qualityTier}`,
       `loop     p95 ${s.frameP95.toFixed(1)} ms  app ${s.appMs.toFixed(2)} ms  objects ${s.objectCount}`,

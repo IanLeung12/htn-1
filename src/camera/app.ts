@@ -55,6 +55,7 @@ import { rayPlaneY } from './surfaces/floor-prior';
 import { WorkerSurfaceEstimator } from './surfaces/worker-estimator';
 import { SurfaceRegistry } from './surfaces/registry';
 import { SceneDebugOverlay } from './debug-overlay';
+import { ImpostorViews, isImpostorActive } from './impostor';
 import { PointerInputAdapter, intersectPlaneY, type PointerRay } from './input/pointer';
 import { StaticPoseSource } from './pose/static';
 import type { VisualPoseSource } from './pose/visual';
@@ -63,7 +64,7 @@ import { TuningStore, type CameraTuning } from './tuning';
 import { TuningPanel } from './tuning-panel';
 import { synthesizeSupportPlate, tierForSyntheticPlate } from './synthetic-plate';
 import { footprintFromProxy } from '@/capture';
-import { unprojectPixel } from '@/capture/geom';
+import { pickFromMapRobust } from './pick';
 import { surfaceBelow } from '@/core';
 import { CameraDiagnostics, type CameraDiagnosticsState } from './diagnostics';
 import { createDepthEstimator } from './depth';
@@ -94,7 +95,7 @@ export interface CameraHandle {
   setCameraHeight(h: number): void;
   setFovY(rad: number): void;
   /** Renderer-side counts for tests/diagnostics (hull meshes drawn over the video, object views). */
-  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number };
+  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number; impostors: number };
   /** Live tunables (persisted in localStorage; `t` toggles the slider panel). */
   readonly tuning: TuningStore;
   /** World point the estimated depth sees at a canvas NDC position (snapped onto the surface below); null without depth. */
@@ -128,6 +129,10 @@ const GRAB_INTERVAL_MS = 120;
 /** Attitude is only learned from planes at least this large (points), smoothed with this time constant. */
 const ATTITUDE_MIN_INLIERS = 2000;
 const ATTITUDE_TAU_MS = 2000;
+const ATTITUDE_MIN_EXTENT_M = 1.0;
+const ATTITUDE_STABLE_RUNS = 3;
+const ATTITUDE_STABLE_RAD = (3 * Math.PI) / 180;
+const ATTITUDE_PITCH_CLAMP_RAD = (10 * Math.PI) / 180;
 /** Farthest a spawned object is placed from the camera along the floor (m). */
 const SPAWN_MAX_M = 2.0;
 /** Clean-plate shots requested from a moving (non-static) camera; see tier-cap.ts's agreement rule. */
@@ -206,7 +211,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       poseSource.setHeight(t.cameraHeightM);
       surfaceEstimator.setHeight(t.cameraHeightM);
     }
-    if ((key === null || key === 'pitchDeg') && staticBase) staticBase.setPitch((t.pitchDeg * Math.PI) / 180);
+    if ((key === null || key === 'pitchDeg') && staticBase) {
+      staticBase.setPitch((t.pitchDeg * Math.PI) / 180);
+      presetPitchDeg = t.pitchDeg;
+    }
     if (key === null || key === 'fovYDeg') frameSource.setFovY((t.fovYDeg * Math.PI) / 180);
     if (key === null || key === 'depthScale' || key === 'depthShiftM' || key === 'depthSmoothing') applyDepthAdjust();
   });
@@ -252,6 +260,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   scene.add(backgroundHull.group);
   const guideOverlay = new GuideOverlay();
   scene.add(guideOverlay.group);
+  // Camera-facing impostors for moved real objects (a single-view depth mesh looks edge-on).
+  const impostors = new ImpostorViews(frameStore);
+  scene.add(impostors.group);
   const debugOverlay = new SceneDebugOverlay();
   debugOverlay.setVisible(false);
   scene.add(debugOverlay.group);
@@ -286,6 +297,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   let lastCorrectionAt = -Infinity;
   let lastTuningSyncAt = -Infinity;
   let lastAttitudeApplyAt = -Infinity;
+  const pitchHistory: number[] = [];
+  /** Pitch the user/preset configured; auto attitude may only deviate +-10 degrees from it. */
+  let presetPitchDeg = tuning.value.pitchDeg;
   let lastSurfaceRegisterAt = -Infinity;
   let floorRegistered = false;
   const localizedAnchors = new Set<string>();
@@ -458,6 +472,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     depthFitMode: 'none',
     depthScale: tuning.value.depthScale,
     rollCorroborated: false,
+    appliedPitchDeg: tuning.value.pitchDeg,
+    appliedRollDeg: 0,
+    attitudeNote: 'waiting for a plane',
     getLines: () => CameraDiagnostics.lines(diagState),
   };
   const diagnostics = new CameraDiagnostics(container, !headless);
@@ -550,15 +567,15 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   /** World point the newest estimated depth sees at an NDC position, snapped onto the surface below it. */
   function pickWorld(ndcX: number, ndcY: number): Vec3 | null {
     const map = depthEstimator.latest;
-    if (!map || map.confidence < 0.3 || map.source === 'plane-prior') return null;
+    if (!map || map.confidence < 0.25 || map.source === 'plane-prior') return null;
     if (performance.now() - map.timestamp > 3000) return null;
     const { u, v } = ndcToVideoUv(ndcX, ndcY);
     if (u < 0 || u > 1 || v < 0 || v > 1) return null;
     const px = Math.min(map.width - 1, Math.floor(u * map.width));
     const py = Math.min(map.height - 1, Math.floor(v * map.height));
-    const d = map.metric[py * map.width + px] as number;
-    if (!(d > 0)) return null;
-    const point = unprojectPixel(px + 0.5, py + 0.5, d, map.pose, map.fovY, map.aspect, map.width, map.height);
+    // Same unprojection + frame the RANSAC cloud used, so picks land on the fitted planes.
+    const point = pickFromMapRobust(map, px, py, surfaceEstimator.lastFrame);
+    if (!point) return null;
     const below = surfaceBelow(store.current, { x: point.x, y: point.y + 0.05, z: point.z });
     if (below && point.y + 0.05 - below.aabb.max.y < 0.2) point.y = below.aabb.max.y;
     return point;
@@ -577,6 +594,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     if (recentPointer) {
       const picked = pickWorld(pointer.lastNdcX, pointer.lastNdcY);
       if (picked) return dropToSupport(picked);
+      // The hover already resolved a world point (depth hit or ground hit); use it as-is.
+      const pw = pointer.pointerWorld;
+      if (Number.isFinite(pw.x) && Math.hypot(pw.x, pw.z) > 0 && pw.y >= -0.05 && pw.y < 3) return dropToSupport({ x: pw.x, y: pw.y, z: pw.z });
       const ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
       rayFromNdc(pointer.lastNdcX, pointer.lastNdcY, ray);
       const ground = intersectPlaneY(ray, 0);
@@ -897,21 +917,33 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       diagState.estPitchDeg = (correction.pitchRad * 180) / Math.PI;
       diagState.estRollDeg = (correction.rollRad * 180) / Math.PI;
       // A static camera learns its attitude from the dominant plane, but only from a LARGE,
-      // confident plane (a 20 degree roll from a laptop lying flat was a small noisy fit),
-      // smoothed with a 2 s time constant; sensors keep theirs.
-      if (staticBase && tuning.value.autoAttitude >= 1 && correction.confidence > 0.6 && correction.inliers > ATTITUDE_MIN_INLIERS) {
+      // confident, STABLE plane (a sloped duvet or a small noisy fit must not tilt the world),
+      // clamped to the preset pitch +-10 degrees and smoothed with a 2 s time constant.
+      pitchHistory.push(correction.pitchRad);
+      if (pitchHistory.length > ATTITUDE_STABLE_RUNS) pitchHistory.shift();
+      const stable = pitchHistory.length === ATTITUDE_STABLE_RUNS && Math.max(...pitchHistory) - Math.min(...pitchHistory) < ATTITUDE_STABLE_RAD;
+      let note = '';
+      if (!staticBase || tuning.value.autoAttitude < 1) note = 'auto attitude off';
+      else if (correction.confidence <= 0.6) note = `plane conf ${correction.confidence.toFixed(2)} <= 0.6`;
+      else if (correction.inliers <= ATTITUDE_MIN_INLIERS) note = `plane ${correction.inliers} pts <= ${ATTITUDE_MIN_INLIERS}`;
+      else if (correction.extentM < ATTITUDE_MIN_EXTENT_M) note = `plane ${correction.extentM.toFixed(1)} m < ${ATTITUDE_MIN_EXTENT_M} m`;
+      else if (!stable) note = `pitch not stable over ${ATTITUDE_STABLE_RUNS} runs`;
+      if (staticBase && note === '') {
+        note = 'applying (clamped to preset +-10 deg)';
         const dt = Number.isFinite(lastAttitudeApplyAt) ? now - lastAttitudeApplyAt : 400;
         lastAttitudeApplyAt = now;
         const k = 1 - Math.exp(-dt / ATTITUDE_TAU_MS);
-        const pitch = staticBase.pitch + k * (correction.pitchRad - staticBase.pitch);
+        const presetPitch = (presetPitchDeg * Math.PI) / 180;
+        const targetPitch = Math.max(presetPitch - ATTITUDE_PITCH_CLAMP_RAD, Math.min(presetPitch + ATTITUDE_PITCH_CLAMP_RAD, correction.pitchRad));
+        const pitch = staticBase.pitch + k * (targetPitch - staticBase.pitch);
         const roll = staticBase.roll + k * (correction.rollRad - staticBase.roll);
         staticBase.setPitch(pitch);
         staticBase.setRoll(Math.max(-0.5, Math.min(0.5, roll)));
-        const pitchDeg = (pitch * 180) / Math.PI;
-        if (Math.abs(pitchDeg - tuning.value.pitchDeg) > 0.5 && now - lastTuningSyncAt > 1000) {
-          lastTuningSyncAt = now;
-          tuning.set('pitchDeg', Math.round(pitchDeg * 10) / 10);
-        }
+      }
+      diagState.attitudeNote = note;
+      if (staticBase) {
+        diagState.appliedPitchDeg = (staticBase.pitch * 180) / Math.PI;
+        diagState.appliedRollDeg = (staticBase.roll * 180) / Math.PI;
       }
     }
     if (!floorRegistered || now - lastSurfaceRegisterAt > 250) {
@@ -948,6 +980,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     const frameSnapshot = store.current;
     views.update(frameSnapshot);
     views.updatePreview(frameSnapshot, previewGroup);
+    impostors.update(frameSnapshot, camera, now);
+    // The impostor replaces ObjectViews' edge-on depth mesh for the same object.
+    views.group.traverse((o) => {
+      if (!o.name.startsWith('object-appearance:')) return;
+      const id = o.name.slice('object-appearance:'.length);
+      if (isImpostorActive(impostors, id)) o.visible = false;
+    });
     plates.update(frameSnapshot, cond.headPose);
     backgroundHull.update(frameSnapshot, cond.headPose);
     shell.update(frameSnapshot, []);
@@ -1100,6 +1139,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       window.removeEventListener('keydown', onCalibrateKey);
       window.removeEventListener('keydown', onOverlayKey);
       debugOverlay.dispose();
+      impostors.dispose();
       disposeRenderer();
       video.remove();
       if (window.__realityEditor === handle) delete window.__realityEditor;
@@ -1138,7 +1178,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       views.group.traverse((o) => {
         if (o.name.startsWith('object-appearance:') && o.visible && o.children.length > 1) appearanceActive += 1;
       });
-      return { hullChildren: backgroundHull.group.children.length, viewChildren: views.group.children.length, appearanceActive };
+      let impostorCount = 0;
+      for (const id of Object.keys(store.current.objects)) if (isImpostorActive(impostors, id)) impostorCount += 1;
+      return { hullChildren: backgroundHull.group.children.length, viewChildren: views.group.children.length, appearanceActive, impostors: impostorCount };
     },
     tuning,
     pickWorld,

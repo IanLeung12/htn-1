@@ -96,6 +96,8 @@ export interface FrameCorrection {
   inliers: number;
   /** True when a side wall's normal agrees with the roll (within 3 degrees); otherwise roll is clamped to +-5 degrees. */
   rollCorroborated: boolean;
+  /** Larger in-plane extent of the dominant plane (m); small planes must not steer the attitude. */
+  extentM: number;
   at: Millis;
 }
 
@@ -236,6 +238,8 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
   private lastProcessedDepthTimestamp: Millis = -Infinity;
   lastRunAt: Millis = -Infinity;
   lastStats: DepthSurfaceStats = { points: 0, floorInliers: 0, tables: 0, walls: 0, volumes: 0, runMs: 0 };
+  /** Camera->world transform used for the last run's point cloud (pick.ts must use the same). */
+  lastFrame: { rotation: Pose['rotation']; position: Vec3 } | null = null;
   /** Raw plane fits of the last run (before extent filters), for diagnostics/tests. */
   lastFits: { horizontal: PlaneFit[]; vertical: PlaneFit[] } = { horizontal: [], vertical: [] };
 
@@ -289,7 +293,8 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       // Distance from the camera (origin in camera space) to the plane n.p + d = 0.
       const heightM = Math.abs(dominant.d);
       const confidence = Math.min(1, dominant.inlierFraction * 3);
-      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, rollCorroborated: false, at: now };
+      const extentM = Math.max(dominant.extentMax.x - dominant.extentMin.x, dominant.extentMax.z - dominant.extentMin.z, dominant.extentMax.y - dominant.extentMin.y);
+      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, rollCorroborated: false, extentM, at: now };
       // World frame from the dominant plane: pitch/roll from its normal, y = 0 on the plane,
       // yaw from the reported pose (depth cannot observe heading).
       const yaw = this.yawOf(depth.pose);
@@ -304,6 +309,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
 
     // 2. World-space cloud (dominant plane at y = 0 when found, else the reported pose).
     transformPoints(points, worldRotation, worldPosition);
+    this.lastFrame = { rotation: worldRotation, position: worldPosition };
 
     // Best-first extraction (see ransac.ts extractPlanes), then merge layered horizontals.
     const extracted = extractPlanes(points, { ...ransacOpts, maxPlanes: 8, minInliers: tuning.planeMinInliers });

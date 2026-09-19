@@ -40,5 +40,6 @@ self.onmessage = (event: MessageEvent<UpdateMessage>) => {
     cameraHeightM: estimator.cameraHeightM,
     lastStats: estimator.lastStats,
     lastRunAt: estimator.lastRunAt,
+    lastFrame: estimator.lastFrame,
   });
 };

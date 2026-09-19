@@ -9,6 +9,7 @@ import type { Millis, Pose } from '@/core/types';
 import type { DepthMap, EstimatedSurface, SurfaceEstimator } from '../contract';
 import type { DetectedVolume } from '@/capture/contract';
 import { DepthSurfaceEstimator, type DepthSurfaceStats, type FrameCorrection, type SurfaceTuning } from './depth-surfaces';
+import type { WorldFrame } from '../pick';
 
 export interface WorkerSurfaceEstimatorOptions {
   cameraHeightM: number;
@@ -25,6 +26,7 @@ interface ResultMessage {
   cameraHeightM: number;
   lastStats: DepthSurfaceStats;
   lastRunAt: number;
+  lastFrame: WorldFrame | null;
 }
 
 export class WorkerSurfaceEstimator implements SurfaceEstimator {
@@ -41,6 +43,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
   correction: FrameCorrection | null = null;
   lastStats: DepthSurfaceStats = { points: 0, floorInliers: 0, tables: 0, walls: 0, volumes: 0, runMs: 0 };
   lastRunAt = -Infinity;
+  lastFrame: WorldFrame | null = null;
   /** Which path is active, for diagnostics. */
   readonly mode: 'worker' | 'inline';
 
@@ -90,6 +93,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
       this.correction = est.correction;
       this.lastStats = est.lastStats;
       this.lastRunAt = est.lastRunAt;
+      this.lastFrame = est.lastFrame;
       return;
     }
     if (!depth || this.busy) return;
@@ -121,6 +125,7 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
     this.heightM = msg.cameraHeightM;
     this.lastStats = msg.lastStats;
     this.lastRunAt = msg.lastRunAt;
+    this.lastFrame = msg.lastFrame;
   }
 
   dispose(): void {
