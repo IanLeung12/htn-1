@@ -89,6 +89,9 @@ export class InteractionController {
   private readonly tmpQuat = new THREE.Quaternion();
   private twoHand: TwoHandInfo | null = null;
 
+  /** Extra reach around every proxy for hover/grab (metres); pointer backends set ~0.04 for small real objects. */
+  pickPadM = 0;
+
   constructor(private readonly store: SceneStore) {}
 
   /** Call once per rendered frame. */
@@ -130,7 +133,7 @@ export class InteractionController {
     const snapshot = this.store.current;
     const origin = { x: state.ray.origin.x, y: state.ray.origin.y, z: state.ray.origin.z };
     const dir = { x: state.ray.direction.x, y: state.ray.direction.y, z: state.ray.direction.z };
-    const hits = raycastProxies(snapshot, origin, dir, 3);
+    const hits = raycastProxies(snapshot, origin, dir, 3, this.pickPadM);
     // A hand enclosed by a proxy counts as hovering only for hand-sized objects; being
     // inside a couch or table proxy must not make every pinch grab the furniture.
     let hoverId: string | null = null;

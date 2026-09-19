@@ -29,6 +29,21 @@ describe('raycastProxies', () => {
     expect(hits[0]!.distance).toBeCloseTo(4.5, 5);
   });
 
+  it('padM grows every proxy so a ray just missing a small box still hits it', () => {
+    const can = makeObject({
+      id: 'can',
+      currentPose: { position: { x: 0, y: 0, z: -0.5 }, rotation: { ...IDENTITY_QUAT } },
+      interactionProxy: { kind: 'box', halfExtents: { x: 0.03, y: 0.06, z: 0.03 } },
+    });
+    const snapshot = makeSnapshot({ objects: { can } });
+    // 4.5 cm off-centre: misses the 3 cm half-width box, hits it with a 4 cm pad.
+    const dir = { x: 0.045, y: 0, z: -0.5 };
+    expect(raycastProxies(snapshot, { x: 0, y: 0, z: 0 }, dir, 3).length).toBe(0);
+    const hits = raycastProxies(snapshot, { x: 0, y: 0, z: 0 }, dir, 3, 0.04);
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.objectId).toBe('can');
+  });
+
   it('hits a sphere proxy', () => {
     const object = makeObject({
       id: 'sphere1',

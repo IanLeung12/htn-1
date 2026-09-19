@@ -180,6 +180,8 @@ const ATTITUDE_PITCH_CLAMP_RAD = (10 * Math.PI) / 180;
 /** Farthest a spawned object is placed from the camera along the floor (m). */
 /** Same tolerance as the physics support margin (core/physics.ts): estimated table boxes end at the last observed point. */
 const SPAWN_TABLE_MARGIN_M = 0.15;
+/** Hover/grab reach around every proxy for the mouse (metres). */
+const PICK_PAD_M = 0.04;
 const SPAWN_MAX_M = 2.0;
 /** Clean-plate shots requested from a moving (non-static) camera; see tier-cap.ts's agreement rule. */
 const MULTI_SHOT_COUNT = 3;
@@ -389,6 +391,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
 
   // ---- Input ------------------------------------------------------------
   const interaction = new InteractionController(store);
+  // Mouse hover/grab tolerance: a 6 cm can at 0.5 m is a few dozen pixels wide.
+  interaction.pickPadM = PICK_PAD_M;
   const rayOrigin = new THREE.Vector3();
   const rayDir = new THREE.Vector3();
   const rayFromNdc = (ndcX: number, ndcY: number, out: PointerRay): void => {
@@ -404,6 +408,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // Events over the video / stereo display canvas (under the overlay) count too: synthetic dispatches
   // and any element that ends up above the overlay bubble to the container.
   const pointer = new PointerInputAdapter({ element: canvas, extraTargets: [container], store, rayFromNdc, depthPick: (x, y) => pickWorld(x, y) });
+  pointer.pickPadM = PICK_PAD_M;
 
   const physics = createProxyPhysics();
   const physicsBridge = createPhysicsBridge(store, physics, conditions);

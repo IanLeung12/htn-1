@@ -168,6 +168,8 @@ export function clampStep(prev: Vec3 | null, next: Vec3, maxStep: number): Vec3 
 }
 
 export class PointerInputAdapter {
+  /** Extra reach around proxies for hover (metres); mirrors InteractionController.pickPadM. */
+  pickPadM = 0;
   readonly state: InputState = { left: makeHandState(), right: makeHandState() };
 
   /** World point under the primary pointer on the last update (hit point or default depth), for spawning/diagnostics. */
@@ -409,7 +411,7 @@ export class PointerInputAdapter {
       }
       point = clampStep(track.lastPoint, point, MAX_STEP_M);
     } else {
-      const hits = raycastProxies(this.store.current, ray.origin, ray.direction, HOVER_MAX_DISTANCE_M);
+      const hits = raycastProxies(this.store.current, ray.origin, ray.direction, HOVER_MAX_DISTANCE_M, this.pickPadM);
       const hit = hits[0];
       if (hit) {
         hitId = hit.objectId;

@@ -66,8 +66,12 @@ function raySphereLocal(originLocal: Vec3, dirLocal: Vec3, radius: number): numb
 }
 
 /** Raycast against object interaction proxies. Box uses a true OBB via the object's pose. */
-export function raycastProxies(snapshot: SceneSnapshot, origin: Vec3, direction: Vec3, maxDistance: number): RaycastHit[] {
+export function raycastProxies(snapshot: SceneSnapshot, origin: Vec3, direction: Vec3, maxDistance: number, padM = 0): RaycastHit[] {
   const dir = normalize(direction);
+  // `padM` grows every proxy so small real objects (a 6 cm can seen from 0.5 m) are easier to
+  // hover with a mouse; hits stay sorted by distance so a padded far object never wins over a
+  // nearer one.
+  const pad = (he: Vec3): Vec3 => (padM > 0 ? { x: he.x + padM, y: he.y + padM, z: he.z + padM } : he);
   const hits: RaycastHit[] = [];
 
   for (const o of Object.values(snapshot.objects)) {
@@ -81,14 +85,15 @@ export function raycastProxies(snapshot: SceneSnapshot, origin: Vec3, direction:
     let t: number | null = null;
     let originInside = false;
     if (proxy.kind === 'box') {
-      t = rayBoxLocal(originLocal, dirLocal, proxy.halfExtents);
-      originInside = pointInBoxLocal(originLocal, proxy.halfExtents);
+      const he = pad(proxy.halfExtents);
+      t = rayBoxLocal(originLocal, dirLocal, he);
+      originInside = pointInBoxLocal(originLocal, he);
     } else if (proxy.kind === 'sphere') {
-      t = raySphereLocal(originLocal, dirLocal, proxy.radius);
-      originInside = length(originLocal) <= proxy.radius;
+      t = raySphereLocal(originLocal, dirLocal, proxy.radius + padM);
+      originInside = length(originLocal) <= proxy.radius + padM;
     } else {
       // capsule: approximate as a box (radius, halfHeight+radius, radius).
-      const he = { x: proxy.radius, y: proxy.halfHeight + proxy.radius, z: proxy.radius };
+      const he = pad({ x: proxy.radius, y: proxy.halfHeight + proxy.radius, z: proxy.radius });
       t = rayBoxLocal(originLocal, dirLocal, he);
       originInside = pointInBoxLocal(originLocal, he);
     }
