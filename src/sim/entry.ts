@@ -9,6 +9,7 @@
  *   ?persist=<key> - forwarded to startApp({ persistKey })
  */
 import { installSimulator } from './bootstrap';
+import { installLocomotion } from './locomotion';
 import { getLandingDiagnosticLines } from '@/render/diagnostics';
 import type { AppHandle } from '@/app/contract';
 
@@ -19,7 +20,8 @@ async function main(): Promise<void> {
   const environment = params.get('env') ?? undefined;
   const persistKey = params.get('persist') ?? undefined;
 
-  await installSimulator({ environment });
+  const sim = await installSimulator({ environment });
+  if (!headless) installLocomotion(sim.xrDevice);
 
   // Import the app *after* installSimulator so the emulated runtime is on
   // navigator.xr before any app code touches it. src/app/main.ts is owned by another
