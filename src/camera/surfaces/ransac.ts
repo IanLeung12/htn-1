@@ -21,22 +21,30 @@ export function depthToPoints(depth: DepthMap, stride: number, maxDepthM = 8): F
   return depthToPointsWithRows(depth, stride, maxDepthM).points;
 }
 
-/** Like depthToPoints, also returning each point's image row (0 = top) so callers can select bands. */
-export function depthToPointsWithRows(depth: DepthMap, stride: number, maxDepthM = 8): { points: Float32Array; rows: Uint16Array } {
-  const { width, height, metric, pose, fovY, aspect } = depth;
+/**
+ * Like depthToPoints, also returning each point's image row (0 = top) so callers can
+ * select bands, and its weight (`depth.weight` per pixel, 1 when the map has none; a
+ * stereo map's plane-filled desk pixels carry 0.4) for weighted RANSAC.
+ */
+export function depthToPointsWithRows(depth: DepthMap, stride: number, maxDepthM = 8): { points: Float32Array; rows: Uint16Array; weights: Float32Array } {
+  const { width, height, metric, pose, fovY, aspect, weight } = depth;
   const out: number[] = [];
   const rows: number[] = [];
+  const weights: number[] = [];
   const step = Math.max(1, Math.floor(stride));
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
-      const d = metric[y * width + x];
+      const i = y * width + x;
+      const d = metric[i];
       if (d === undefined || !(d > 0) || d > maxDepthM) continue;
       const p = unprojectPixel(x + 0.5, y + 0.5, d, pose, fovY, aspect, width, height);
       out.push(p.x, p.y, p.z);
       rows.push(y);
+      const wgt = weight ? (weight[i] as number) : 1;
+      weights.push(wgt > 0 ? wgt : 1);
     }
   }
-  return { points: Float32Array.from(out), rows: Uint16Array.from(rows) };
+  return { points: Float32Array.from(out), rows: Uint16Array.from(rows), weights: Float32Array.from(weights) };
 }
 
 function pointAt(points: Float32Array, i: number): Vec3 {
@@ -90,6 +98,11 @@ export interface RansacPlaneOptions {
   /** 1 = usable for sampling/counting; restricts a second search to exclude prior inliers. */
   candidateMask?: Uint8Array;
   seed?: number;
+  /**
+   * Per-point weights (0..1, one per point). Inlier votes and the least-squares refit are
+   * weighted; `inliers` / `minInliers` / `inlierFraction` stay plain counts. Absent = 1.
+   */
+  weights?: Float32Array;
 }
 
 function planeFromThreePoints(a: Vec3, b: Vec3, c: Vec3): { normal: Vec3; d: number } | null {
@@ -181,15 +194,18 @@ function smallestEigenvector(m: number[][]): Vec3 {
   return normalize(vec);
 }
 
-function refitPlane(points: Float32Array, inlierIdx: number[]): { normal: Vec3; d: number; centroid: Vec3 } {
+function refitPlane(points: Float32Array, inlierIdx: number[], weights?: Float32Array): { normal: Vec3; d: number; centroid: Vec3 } {
   const centroid = { x: 0, y: 0, z: 0 };
+  let n = 0;
   for (const i of inlierIdx) {
     const p = pointAt(points, i);
-    centroid.x += p.x;
-    centroid.y += p.y;
-    centroid.z += p.z;
+    const w = weights ? (weights[i] as number) : 1;
+    centroid.x += p.x * w;
+    centroid.y += p.y * w;
+    centroid.z += p.z * w;
+    n += w;
   }
-  const n = inlierIdx.length;
+  if (n <= 0) n = 1;
   centroid.x /= n;
   centroid.y /= n;
   centroid.z /= n;
@@ -201,15 +217,16 @@ function refitPlane(points: Float32Array, inlierIdx: number[]): { normal: Vec3; 
   ];
   for (const i of inlierIdx) {
     const p = pointAt(points, i);
+    const w = weights ? (weights[i] as number) : 1;
     const dx = p.x - centroid.x;
     const dy = p.y - centroid.y;
     const dz = p.z - centroid.z;
-    cov[0]![0]! += dx * dx;
-    cov[0]![1]! += dx * dy;
-    cov[0]![2]! += dx * dz;
-    cov[1]![1]! += dy * dy;
-    cov[1]![2]! += dy * dz;
-    cov[2]![2]! += dz * dz;
+    cov[0]![0]! += w * dx * dx;
+    cov[0]![1]! += w * dx * dy;
+    cov[0]![2]! += w * dx * dz;
+    cov[1]![1]! += w * dy * dy;
+    cov[1]![2]! += w * dy * dz;
+    cov[2]![2]! += w * dz * dz;
   }
   cov[1]![0] = cov[0]![1]!;
   cov[2]![0] = cov[0]![2]!;
@@ -229,6 +246,7 @@ export function ransacPlane(points: Float32Array, opts: RansacPlaneOptions = {})
   const thresholdM = opts.thresholdM ?? 0.03;
   const minInliers = opts.minInliers ?? 50;
   const mask = opts.candidateMask;
+  const weights = opts.weights;
 
   const usable: number[] = [];
   for (let i = 0; i < n; i++) {
@@ -239,6 +257,7 @@ export function ransacPlane(points: Float32Array, opts: RansacPlaneOptions = {})
   const rng = new Lcg(opts.seed ?? 1);
 
   let bestInliers: number[] | null = null;
+  let bestScore = -1;
   let bestNormal: Vec3 | null = null;
   let bestD = 0;
 
@@ -262,14 +281,19 @@ export function ransacPlane(points: Float32Array, opts: RansacPlaneOptions = {})
     const d = -dot(normal, pointAt(points, i0));
 
     const inliers: number[] = [];
+    let score = 0;
     for (const idx of usable) {
       const p = pointAt(points, idx);
       const dist = Math.abs(dot(normal, p) + d);
-      if (dist <= thresholdM) inliers.push(idx);
+      if (dist <= thresholdM) {
+        inliers.push(idx);
+        score += weights ? (weights[idx] as number) : 1;
+      }
     }
 
-    if (!bestInliers || inliers.length > bestInliers.length) {
+    if (!bestInliers || score > bestScore) {
       bestInliers = inliers;
+      bestScore = score;
       bestNormal = normal;
       bestD = d;
     }
@@ -278,7 +302,7 @@ export function ransacPlane(points: Float32Array, opts: RansacPlaneOptions = {})
   if (!bestInliers || !bestNormal || bestInliers.length < minInliers) return null;
 
   // Least-squares refit on the inliers.
-  const refit = refitPlane(points, bestInliers);
+  const refit = refitPlane(points, bestInliers, weights);
   let normal = refit.normal;
   if (opts.normalHint) {
     normal = alignToHint(normal, opts.normalHint);
@@ -416,6 +440,8 @@ export interface FindPlanesOptions {
    * search skip every point already claimed by horizontal planes, which otherwise
    * dominate the random samples. */
   candidateMask?: Uint8Array;
+  /** Per-point weights for the votes/refit (see RansacPlaneOptions.weights). */
+  weights?: Float32Array;
 }
 
 export interface FindHorizontalPlanesOptions extends FindPlanesOptions {
@@ -445,6 +471,7 @@ function findPlanesWithHint(
       maxNormalAngleRad,
       candidateMask: mask,
       seed: (opts.seed ?? 1) + k * 97,
+      weights: opts.weights,
     });
     if (!fit) break;
     results.push(fit);
@@ -531,6 +558,7 @@ export function extractPlanes(
       minInliers: opts.minInliers,
       candidateMask: mask,
       seed: (opts.seed ?? 1) + k * 97,
+      weights: opts.weights,
     });
     if (!fit) break;
     for (const idx of fit.inliers) mask[idx] = 0;

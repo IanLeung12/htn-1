@@ -107,9 +107,10 @@ export class WorkerSurfaceEstimator implements SurfaceEstimator {
     this.lastSentTimestamp = depth.timestamp;
     this.lastSentAt = now;
     const metric = new Float32Array(depth.metric); // copy: the map stays usable on the main thread
+    const weight = depth.weight ? new Float32Array(depth.weight) : undefined;
     this.worker.postMessage(
-      { type: 'update', map: { ...depth, metric: metric.buffer }, tuning: this.getTuning(), now, cameraHeightM: this.heightM },
-      [metric.buffer],
+      { type: 'update', map: { ...depth, metric: metric.buffer, weight: weight?.buffer }, tuning: this.getTuning(), now, cameraHeightM: this.heightM },
+      weight ? [metric.buffer, weight.buffer] : [metric.buffer],
     );
   }
 

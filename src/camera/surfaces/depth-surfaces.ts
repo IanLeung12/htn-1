@@ -285,7 +285,8 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     const cloud = depthToPointsWithRows(localMap, stride, MAX_POINT_DEPTH_M);
     const points = cloud.points;
     const pointCount = Math.floor(points.length / 3);
-    const ransacOpts = { thresholdM: tuning.ransacThresholdM, iterations: tuning.ransacIterations, minInliers: Math.max(20, Math.floor(tuning.planeMinInliers / 2)), seed: 7 };
+    // Plane-filled stereo pixels (the bare desk) vote with their map weight (0.4-0.5) rather than 1.
+    const ransacOpts = { thresholdM: tuning.ransacThresholdM, iterations: tuning.ransacIterations, minInliers: Math.max(20, Math.floor(tuning.planeMinInliers / 2)), seed: 7, weights: cloud.weights };
     // Ground = the plane that explains the BOTTOM of the frame (the desk edge under a laptop
     // camera), not the largest plane in view (the bed behind it). Fit first among points from
     // the lowest GROUND_BAND_FRACTION of image rows with a tight threshold; fall back to the

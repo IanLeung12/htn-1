@@ -102,6 +102,40 @@ laptop; the RTX 5060 was not selected by the headless run): 5.7 ms at
 336x189 (d 64), 9.6 ms at 448x252 (d 88), 20 ms at 672x378 (d 128).
 ~290 ms at 336x188 on SwiftShader (the CI path).
 
+## Textureless holes (the bare desk)
+
+Census matching cannot match a featureless surface, so the desk the camera sits
+on is mostly holes (LR-valid ~35% on the clip). Three things make it usable:
+
+1. **Plane-aware fill** (matcher, final pass): an invalid pixel whose 15x15
+   neighbourhood is >= 20% valid and planar in disparity (least-squares
+   `d = a x + b y + c`, RMS <= 2 px) takes the plane's value at its centre
+   with confidence / weight **0.4**; 5x5 holes with >= 8 valid neighbours take
+   the mean with 0.5; larger holes stay 0. CPU reference
+   `planeFillDisparity` in `census.ts`. On the clip: 36% matched, 12-13%
+   mean-filled, 3% plane-filled at 336x189.
+2. **Weighted RANSAC**: `DepthMap.weight` (per pixel) travels with the map
+   into the surface worker; `depthToPointsWithRows` returns it per point and
+   `ransacPlane` / `extractPlanes` count inlier votes and refit with it, so
+   filled desk pixels support the ground/table fit without outvoting matched
+   ones. The clip's desk then fits as the ground with the camera 2-5 cm above
+   it (`surfaceEstimator.cameraHeightM`), confidence 0.95.
+3. **Pick through a hole** (`pick.ts`, `pickWorldDetailed` on the camera
+   handle): when the pixel has no depth, the nearest valid depth within 24 px
+   is found and, if a registered horizontal surface crosses the pixel ray
+   within 5 cm of it (inside its footprint + 0.3 m), the intersection is the
+   pick with confidence 0.5 (`mode: 'surface'`); otherwise null and Spawn
+   falls back as before. On the clip the bare-desk picks already resolve as
+   `mode: 'depth'` through the fill (0.31-0.44 m, y = 0.01).
+
+`tests/e2e/camera-zed-clip-interaction.spec.ts` runs all of it on the real
+clip: ground fit, bare-desk and cans picks, hover (`pointer.pointerWorld`), and
+a discovered volume hovered and dragged with the mouse. The pointer adapter
+also listens on the container, so events dispatched to the display canvas
+under the overlay count (its `depthPick` is the app's `pickWorld`; it never
+calls `DepthEstimator.sample`, which takes a pixel grid size for the capture
+pipeline).
+
 ## Expected accuracy and tunables
 
 Triangulation error grows with Z^2: dZ = Z^2 / (f B) * dd. For the ZED 2 at

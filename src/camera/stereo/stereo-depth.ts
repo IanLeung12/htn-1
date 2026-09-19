@@ -22,7 +22,10 @@
  *               parabola sub-pixel refinement -> RG32F (disparity, cost).
  *   7. lr       left-right consistency: reject |dL - dR(x - dL)| > 1 -> R32F.
  *   8. median   3x3 median over consistent neighbours -> R32F.
- *   9. final    5x5 hole fill (confidence 0.5) and Z = fx * B / d -> RGBA32F
+ *   9. final    5x5 mean hole fill (confidence 0.5), then a plane-aware fill of
+ *               the remaining holes whose 15x15 neighbourhood is >= 20% valid and
+ *               planar in disparity (least squares, confidence 0.4; the bare desk
+ *               between matched edges), and Z = fx * B / d -> RGBA32F
  *               (depth m, confidence, disparity, 0), read back once.
  *
  * Depth is metres along the rectified camera axis at the work resolution
@@ -51,6 +54,14 @@ const AGG_RADIUS = 3;
 const MIN_DISPARITY = 0.5;
 /** Minimum valid neighbours (of 24) for the 5x5 hole fill. */
 const HOLE_FILL_MIN_NEIGHBOURS = 8;
+/** Plane-aware fill: radius of the neighbourhood (7 -> 15x15) fitted by least squares in disparity space. */
+export const PLANE_FILL_RADIUS = 7;
+/** ...which must be at least this fraction valid; larger holes stay invalid. */
+export const PLANE_FILL_MIN_VALID_FRACTION = 0.2;
+/** ...and fit those neighbours to within this RMS (px), else the neighbourhood is not one surface. */
+export const PLANE_FILL_MAX_RMS_PX = 2;
+/** Confidence / weight of plane-filled pixels (mean-filled 0.5, matched 1). */
+export const PLANE_FILL_CONFIDENCE = 0.4;
 
 // ---------------------------------------------------------------------------
 // GLSL
@@ -275,25 +286,57 @@ uniform ivec2 uSize;
 uniform float uFxB;
 uniform float uMinDisparity;
 uniform int uHoleMin;
+uniform int uPlaneRadius;
+uniform float uPlaneMinFraction;
+uniform float uPlaneMaxRms;
+uniform float uPlaneConf;
 out vec4 outColor;
+float at(ivec2 p) {
+  if (p.x < 0 || p.y < 0 || p.x >= uSize.x || p.y >= uSize.y) return 0.0;
+  return texelFetch(uD, p, 0).r;
+}
 void main() {
   ivec2 q = ivec2(gl_FragCoord.xy);
   float d = texelFetch(uD, q, 0).r;
   float conf = 1.0;
   if (d <= 0.0) {
+    // Small holes: mean of the 5x5 neighbours.
     float s = 0.0;
     int n = 0;
     for (int dy = -2; dy <= 2; dy++) {
       for (int dx = -2; dx <= 2; dx++) {
-        ivec2 p = q + ivec2(dx, dy);
-        if (p.x < 0 || p.y < 0 || p.x >= uSize.x || p.y >= uSize.y) continue;
-        float v = texelFetch(uD, p, 0).r;
+        float v = at(q + ivec2(dx, dy));
         if (v > 0.0) { s += v; n++; }
       }
     }
-    if (n < uHoleMin) { outColor = vec4(0.0); return; }
-    d = s / float(n);
-    conf = 0.5;
+    if (n >= uHoleMin) {
+      d = s / float(n);
+      conf = 0.5;
+    } else {
+      // Plane-aware fill: least squares d = a*x + b*y + c over the valid pixels of the
+      // (2r+1)^2 neighbourhood (textureless desk between matched edges); needs enough support
+      // and a planar neighbourhood (small RMS), else the hole stays invalid.
+      float Sxx = 0.0, Sxy = 0.0, Syy = 0.0, Sx = 0.0, Sy = 0.0, Sd = 0.0, Sxd = 0.0, Syd = 0.0, Sdd = 0.0, N = 0.0;
+      for (int dy = -uPlaneRadius; dy <= uPlaneRadius; dy++) {
+        for (int dx = -uPlaneRadius; dx <= uPlaneRadius; dx++) {
+          float v = at(q + ivec2(dx, dy));
+          if (v <= 0.0) continue;
+          float x = float(dx);
+          float y = float(dy);
+          Sxx += x * x; Sxy += x * y; Syy += y * y; Sx += x; Sy += y;
+          Sd += v; Sxd += x * v; Syd += y * v; Sdd += v * v; N += 1.0;
+        }
+      }
+      float side = float(2 * uPlaneRadius + 1);
+      if (N < uPlaneMinFraction * (side * side - 1.0)) { outColor = vec4(0.0); return; }
+      mat3 A = mat3(Sxx, Sxy, Sx, Sxy, Syy, Sy, Sx, Sy, N);
+      if (abs(determinant(A)) < 1e-3) { outColor = vec4(0.0); return; }
+      vec3 sol = inverse(A) * vec3(Sxd, Syd, Sd);
+      float sse = max(0.0, Sdd - sol.x * Sxd - sol.y * Syd - sol.z * Sd);
+      if (sqrt(sse / N) > uPlaneMaxRms) { outColor = vec4(0.0); return; }
+      d = sol.z;
+      conf = uPlaneConf;
+    }
   }
   if (d < uMinDisparity) { outColor = vec4(0.0); return; }
   outColor = vec4(uFxB / d, conf, d, 0.0);
@@ -575,6 +618,7 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
         height: frame.height,
         metric: result.metric,
         confidence: result.validFraction,
+        weight: result.confidence,
         source: 'stereo',
         pose: { position: { ...pose.position }, rotation: { ...pose.rotation } },
         fovY: intrinsics.fovY,
@@ -780,6 +824,10 @@ export class WebGL2StereoDepthEstimator implements StereoDepthEstimator {
     gl.uniform1f(loc(gl, P.final, 'uFxB'), fxWork * baselineM);
     gl.uniform1f(loc(gl, P.final, 'uMinDisparity'), MIN_DISPARITY);
     gl.uniform1i(loc(gl, P.final, 'uHoleMin'), HOLE_FILL_MIN_NEIGHBOURS);
+    gl.uniform1i(loc(gl, P.final, 'uPlaneRadius'), PLANE_FILL_RADIUS);
+    gl.uniform1f(loc(gl, P.final, 'uPlaneMinFraction'), PLANE_FILL_MIN_VALID_FRACTION);
+    gl.uniform1f(loc(gl, P.final, 'uPlaneMaxRms'), PLANE_FILL_MAX_RMS_PX);
+    gl.uniform1f(loc(gl, P.final, 'uPlaneConf'), PLANE_FILL_CONFIDENCE);
     this.bindTex(gl, P.final, 'uD', 0, b.median.texture);
     this.draw(gl, P.final, b.final);
 

@@ -53,6 +53,13 @@ export interface PointerInputOptions {
   store: SceneStore;
   rayFromNdc: RayFromNdc;
   depthPick?: DepthPick;
+  /**
+   * Extra elements whose pointer events also drive the adapter (the app passes the container so
+   * events dispatched to the passthrough video / stereo display canvas under the overlay count).
+   * Coordinates are always taken relative to `element`; events that already hit `element` are
+   * handled once.
+   */
+  extraTargets?: HTMLElement[];
   /** Depth (m) along the ray for the grab point when nothing is under the pointer. */
   defaultDepthM?: number;
   /** Metres of lift per wheel notch (100 delta units). */
@@ -175,7 +182,9 @@ export class PointerInputAdapter {
   /** performance.now() of the last primary pointer event; -Infinity before any. */
   lastPointerAt = -Infinity;
 
-  private readonly element: HTMLElement;
+  /** The overlay canvas the adapter listens on (tests dispatch pointer events here, not on the video). */
+  readonly element: HTMLElement;
+  private readonly extraTargets: HTMLElement[];
   private readonly store: SceneStore;
   private readonly rayFromNdc: RayFromNdc;
   private readonly depthPick: DepthPick | null;
@@ -187,6 +196,7 @@ export class PointerInputAdapter {
 
   constructor(opts: PointerInputOptions) {
     this.element = opts.element;
+    this.extraTargets = (opts.extraTargets ?? []).filter((el) => el !== opts.element);
     this.store = opts.store;
     this.rayFromNdc = opts.rayFromNdc;
     this.depthPick = opts.depthPick ?? null;
@@ -201,7 +211,30 @@ export class PointerInputAdapter {
     this.element.addEventListener('pointerleave', this.onPointerLeave);
     this.element.addEventListener('wheel', this.onWheel, { passive: false });
     this.element.addEventListener('contextmenu', this.onContextMenu);
+    for (const el of this.extraTargets) {
+      el.addEventListener('pointerdown', this.onExtraDown);
+      el.addEventListener('pointermove', this.onExtraMove);
+      el.addEventListener('pointerup', this.onExtraUp);
+      el.addEventListener('pointercancel', this.onExtraUp);
+    }
   }
+
+  /** True when the event was already handled by the overlay's own listener (it bubbled up from `element`). */
+  private fromOverlay(e: Event): boolean {
+    return e.target === this.element || (e.composedPath?.() ?? []).includes(this.element);
+  }
+
+  private readonly onExtraDown = (e: PointerEvent): void => {
+    if (!this.fromOverlay(e)) this.onPointerDown(e);
+  };
+
+  private readonly onExtraMove = (e: PointerEvent): void => {
+    if (!this.fromOverlay(e)) this.onPointerMove(e);
+  };
+
+  private readonly onExtraUp = (e: PointerEvent): void => {
+    if (!this.fromOverlay(e)) this.onPointerUp(e);
+  };
 
   /** Programmatic pointer injection (tests, voice "grab that"): coordinates in CSS pixels relative to the element. */
   inject(kind: 'down' | 'move' | 'up', clientX: number, clientY: number, pointerId = 1, touch = false): void {
@@ -438,6 +471,12 @@ export class PointerInputAdapter {
     this.element.removeEventListener('pointerleave', this.onPointerLeave);
     this.element.removeEventListener('wheel', this.onWheel);
     this.element.removeEventListener('contextmenu', this.onContextMenu);
+    for (const el of this.extraTargets) {
+      el.removeEventListener('pointerdown', this.onExtraDown);
+      el.removeEventListener('pointermove', this.onExtraMove);
+      el.removeEventListener('pointerup', this.onExtraUp);
+      el.removeEventListener('pointercancel', this.onExtraUp);
+    }
     this.tracks.length = 0;
   }
 }
