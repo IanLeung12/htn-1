@@ -59,6 +59,8 @@ import { ImpostorViews, isImpostorActive } from './impostor';
 import { ZedStereoFrameSource } from './stereo/zed-frame-source';
 import { loadZedCalibration } from './stereo/zed-calib';
 import { getStereoDepthFactory, type StereoCalibrationInput, type StereoDepthEstimator } from './stereo/contract';
+// Side effect: the WebGL2 census matcher registers itself with the stereo contract's factory.
+import './stereo/stereo-depth';
 import { PointerInputAdapter, intersectPlaneY, type PointerRay } from './input/pointer';
 import { StaticPoseSource } from './pose/static';
 import type { VisualPoseSource } from './pose/visual';
