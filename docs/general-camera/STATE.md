@@ -43,6 +43,27 @@ branch only; 5177 is the owner's real-camera test origin). Architecture: `docs/g
   `synthetic_completion`/`completed_v3`, tier D: move/restore/undo, no delete). Delete
   needs an observed clean plate (`captureCleanPlate` after the object was physically
   removed), which monocular depth caps at tier B (`src/camera/tier-cap.ts`).
+- **Synthetic delete (static camera only, honestly labelled, visually approximate).** The
+  owner's priority is deleting/moving every real desk object WITHOUT physically removing
+  each one first. With tuning `syntheticDelete` (default 1, panel group "Edit"),
+  `prepareRealObject` lifts a discovered object to tier B (confidence min(0.5, ring donor
+  fraction)) while keeping its plate's honest `synthetic_completion`/`completed_v3` label
+  and ring-donor `coverage`; the camera app's resolver is created with
+  `minDeleteCoverageByProvenance: { synthetic_completion: 0.02 }` (`src/core/resolver.ts`,
+  additive option) so that plate passes the delete check, and its envelope is widened
+  just enough to contain the fixed camera's pose. On Delete, `StaticCameraEraser` has no
+  clean-plate frame, so it fabricates one: `src/camera/edit/inpaint.ts` copies the NEWEST
+  appearance frame (last frame stored while the object still sat at its original spot -
+  not the live frame, which may already show it moved or a hand) and fills the tracked
+  silhouette (dilated 2 px) from the 6 px ring of observed pixels outside it
+  (nearest-donor via a two-pass propagation, 3x3 blur inside the fill; ~2-5 ms at
+  320x180), marks the copy `CameraFrame.synthetic: true` and composites it exactly like a
+  real plate; cached per (frame timestamp, mask bbox), `renderStats().eraserSynthetic`
+  counts them. Only valid while the camera is static (the eraser's existing motion gate);
+  flat desks/walls fill convincingly, textured or edge-crossing backgrounds smear. The
+  HUD hint says so ("Delete hides it with a synthetic fill (press Capture plate with the
+  object removed for a real one)"); a captured clean plate still takes precedence over
+  the fill, and Restore/Undo bring the object back through the unchanged paths.
 - **Tracking loss from motion.** Every pose source is wrapped in `VisualPoseSource`
   (`src/camera/pose/visual.ts`): sparse Lucas-Kanade flow between grabbed frames; median
   flow above 6 px marks the camera as moving -> `trackingOk` false until it settles

@@ -24,6 +24,14 @@ export interface ResolverOptions {
   maxVersionLag?: number;
   minDeleteCoverage?: number;
   minMoveCoverage?: number;
+  /**
+   * Per-provenance override of `minDeleteCoverage` (additive; general-camera
+   * backend). A `synthetic_completion` plate's coverage is the fraction of
+   * RING donors the frame saw, not footprint coverage, so the static-camera
+   * synthetic delete (docs/general-camera/STATE.md "Synthetic delete") sets
+   * a much lower floor for that provenance only.
+   */
+  minDeleteCoverageByProvenance?: Partial<Record<BackgroundProvenance, number>>;
 }
 
 // Higher rank = better evidence. Never let updateBackground silently
@@ -86,9 +94,10 @@ function findPlateFor(
   object: EditableObject,
   headPose: RuntimeConditions['headPose'],
   minCoverage: number,
+  byProvenance?: Partial<Record<BackgroundProvenance, number>>,
 ): { ok: true } | { ok: false; reason: 'no_background_evidence' | 'outside_envelope' } {
   const candidates = object.background.filter(
-    (p) => p.provenance !== 'unavailable' && p.coverage >= minCoverage && p.version !== 'invalidated',
+    (p) => p.provenance !== 'unavailable' && p.coverage >= (byProvenance?.[p.provenance] ?? minCoverage) && p.version !== 'invalidated',
   );
   if (candidates.length === 0) {
     return { ok: false, reason: 'no_background_evidence' };
@@ -124,6 +133,7 @@ export function createResolver(opts?: ResolverOptions): TransactionResolver {
   const maxVersionLag = opts?.maxVersionLag ?? 3;
   const minDeleteCoverage = opts?.minDeleteCoverage ?? 0.6;
   const minMoveCoverage = opts?.minMoveCoverage ?? 0.4;
+  const minDeleteCoverageByProvenance = opts?.minDeleteCoverageByProvenance;
 
   function reject(intent: Intent, reason: RejectReason, explanation: string): ResolveResult {
     return { ok: false, reason, explanation, intent };
@@ -200,7 +210,7 @@ export function createResolver(opts?: ResolverOptions): TransactionResolver {
     // Only physical objects reveal a background when hidden; spawned/imported
     // objects can always be deleted (their tier still gates via TIER_CAPABILITIES).
     if (intent.kind === 'delete' && object && object.origin === 'physical') {
-      const plateCheck = findPlateFor(object, conditions.headPose, minDeleteCoverage);
+      const plateCheck = findPlateFor(object, conditions.headPose, minDeleteCoverage, minDeleteCoverageByProvenance);
       if (!plateCheck.ok) {
         if (plateCheck.reason === 'no_background_evidence') {
           return reject(

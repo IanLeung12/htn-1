@@ -33,6 +33,13 @@ export interface CameraFrame {
    * sets this wider so coverage is honest instead of silently zero.
    */
   depthToleranceM?: number;
+  /**
+   * Additive, optional (general-camera backend): true when `rgba` was NOT
+   * observed as-is but fabricated, e.g. an object's silhouette inpainted
+   * from the surrounding pixels (`src/camera/edit/inpaint.ts`). Absent means
+   * an observed frame.
+   */
+  synthetic?: boolean;
 }
 
 export interface CameraFrameSource {
