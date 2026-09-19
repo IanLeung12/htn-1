@@ -405,7 +405,7 @@ export function createResolver(opts?: ResolverOptions): TransactionResolver {
           ok: true,
           snapshot: {
             ...snapshot,
-            preview: { objectId: intent.objectId, pose: intent.pose, action: intent.action },
+            preview: { objectId: intent.objectId, pose: intent.pose, action: intent.action, scale: intent.scale },
             version,
             committedAt,
           },
