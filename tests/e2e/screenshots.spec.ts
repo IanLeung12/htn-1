@@ -71,39 +71,91 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   // table's original position dead-center so "the projected centre of the
   // deleted table's original box" is just the middle of each eye's viewport.
   await evalApp(() => window.__testHelpers!.dispatchIntent({ kind: 'setMode', mode: 'live-overlay' }, 'test'));
-  await simPage.evaluate((p) => {
-    window.__sim!.setHead({ x: p.x, y: p.y + 0.3, z: p.z + 1.2 });
-    window.__sim!.lookAt(p);
-  }, pos);
-  await simPage.waitForTimeout(400);
-  const sidePath = path.join(OUT, '06-table-deleted-side-view.png');
-  await simPage.screenshot({ path: sidePath });
 
   const viewport = simPage.viewportSize();
   expect(viewport).not.toBeNull();
   const eyeWidth = viewport!.width / 2;
   const eyeHeight = viewport!.height;
-  const png = PNG.sync.read(fs.readFileSync(sidePath));
-
-  // Camera looks directly at `pos`, so its projection sits at the centre of
-  // each eye's own viewport; sample the left eye's centre plus a
-  // known-background patch well clear of the table's footprint (near the
-  // top of the same viewport - ceiling/wall, never the deleted object).
   const centerX = Math.round(eyeWidth / 2);
   const centerY = Math.round(eyeHeight / 2);
-  const tableLuminance = patchLuminance(png, centerX, centerY, 6);
-  const backgroundLuminance = patchLuminance(png, centerX, Math.round(eyeHeight * 0.12), 6);
 
-  console.log('SCREENS', JSON.stringify({
-    cap, del: del.ok, tableId, roomShell,
-    tableLuminance, backgroundLuminance,
-  }));
+  // Two head positions at ~1.2m from the table, 45 degrees apart, both
+  // looking straight at its original centre. If the hull only reprojected a
+  // single clean-plate frame onto the box's faces (the pre-parallax-fix
+  // behaviour), it would read as noticeably darker or brighter than the
+  // real background from at least one of these angles, and would show the
+  // wrong background geometry (ceiling/couch instead of whatever is really
+  // behind the table) from the rotated angle in particular.
+  //
+  // The room this scene is emulated in is a jagged, per-face-shaded terrain
+  // mesh, not a flat wall - luminance varies a lot even between two patches
+  // a few pixels apart (normal-dependent lighting), so comparing the hull
+  // patch against some other nearby-but-different surface is noisy and not
+  // actually what "looks truthful" means. Instead, at each head position we
+  // capture the literal ground truth for that exact screen patch: hide the
+  // real physical volume (same trick `captureCleanPlate` above uses) so
+  // passthrough alone shows whatever is really behind the table, at the
+  // very same pixels the hull otherwise covers, then restore it. The hull
+  // patch (real table present, hidden behind BackgroundHull's stand-in)
+  // should match that ground truth to within the passthrough's own
+  // sample-to-sample noise.
+  // Both offsets are expressed as an angle around the table (measured the
+  // same way `guide.ts`'s `bearingTo` does: atan2(z, x)) at a fixed 1.2m
+  // radius. The first angle (90 degrees, i.e. the `{x:0, z:1.2}` "approach
+  // from the front" offset used throughout this test) is where guided
+  // capture's arc starts (the head was already at roughly this bearing from
+  // the table when `captureCleanPlate` ran above - see `planCaptureViewpoints`
+  // in src/app/guide.ts, which sweeps its 4-viewpoint arc +60 degrees per
+  // step from the head's bearing at capture time). The second angle is 45
+  // degrees further around in that same sweep direction, so it lands well
+  // inside the guided arc's actual capture coverage rather than off the back
+  // of it - this is still a substantively different viewing angle (enough to
+  // exercise real parallax), not a trivial re-take of the first.
+  const ANGLE0 = Math.PI / 2;
+  const ANGLE1 = ANGLE0 + Math.PI / 4;
+  const RADIUS_M = 1.2;
+  const headOffsets = [
+    { x: RADIUS_M * Math.cos(ANGLE0), z: RADIUS_M * Math.sin(ANGLE0), path: path.join(OUT, '06-table-deleted-side-view.png') },
+    { x: RADIUS_M * Math.cos(ANGLE1), z: RADIUS_M * Math.sin(ANGLE1), path: path.join(OUT, '06b-table-deleted-side-view-45deg.png') },
+  ];
 
-  // Before the fix, the still-visible real table volume reads as a distinctly
-  // different (darker/lighter) blob than its surroundings; after
-  // BackgroundHull replaces it with the nearest clean-plate viewpoint, the
-  // two patches should read as roughly the same background.
-  expect(Math.abs(tableLuminance - backgroundLuminance)).toBeLessThanOrEqual(25);
+  const results: Array<{ path: string; truthPath: string; tableLuminance: number; backgroundLuminance: number }> = [];
+  for (const offset of headOffsets) {
+    await simPage.evaluate(({ p, offset }) => {
+      window.__sim!.setHead({ x: p.x + offset.x, y: p.y + 0.3, z: p.z + offset.z });
+      window.__sim!.lookAt(p);
+    }, { p: pos, offset });
+    await simPage.waitForTimeout(400);
+    await simPage.screenshot({ path: offset.path });
+
+    const truthPath = offset.path.replace(/\.png$/, '-ground-truth.png');
+    await evalApp((v) => window.__sim!.hideVolume(v), vol);
+    await simPage.waitForTimeout(300);
+    await simPage.screenshot({ path: truthPath });
+    await evalApp((v) => window.__sim!.showVolume(v), vol);
+    await simPage.waitForTimeout(300);
+
+    // Camera looks directly at `pos`, so its projection sits at the centre
+    // of each eye's own viewport - sample the left eye's centre in both the
+    // hull screenshot and its ground-truth counterpart.
+    const png = PNG.sync.read(fs.readFileSync(offset.path));
+    const truthPng = PNG.sync.read(fs.readFileSync(truthPath));
+    const tableLuminance = patchLuminance(png, centerX, centerY, 6);
+    const backgroundLuminance = patchLuminance(truthPng, centerX, centerY, 6);
+    results.push({ path: offset.path, truthPath, tableLuminance, backgroundLuminance });
+  }
+
+  console.log('SCREENS', JSON.stringify({ cap, del: del.ok, tableId, roomShell, results }));
+
+  // Before the fix, the still-visible real table volume (or its single-frame
+  // box reprojection) read as a distinctly different (darker/lighter) patch
+  // than the ground truth of what's really behind it; after BackgroundHull
+  // v2 replaces it with a parallax-correct depth mesh of the nearest
+  // clean-plate viewpoint, both viewing angles should closely match ground
+  // truth - i.e. the deleted table reads as truly gone, not just plausible.
+  for (const r of results) {
+    expect(Math.abs(r.tableLuminance - r.backgroundLuminance)).toBeLessThanOrEqual(12);
+  }
 
   // Hand menu: bring the head back to a neutral forward-looking pose, raise
   // the left hand ~0.35m in front of it with the palm turned toward the
