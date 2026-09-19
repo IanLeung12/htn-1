@@ -158,11 +158,22 @@ export class BackgroundHull {
     }
   }
 
+  /** Objects another path (the static-camera eraser) already hides; the hull skips them. */
+  private suppressed = new Set<string>();
+
+  setSuppressed(ids: ReadonlySet<string>): void {
+    let changed = ids.size !== this.suppressed.size;
+    if (!changed) for (const id of ids) if (!this.suppressed.has(id)) { changed = true; break; }
+    if (!changed) return;
+    this.suppressed = new Set(ids);
+    this.lastVersion = -1; // rebuild on the next update
+  }
+
   private rebuildActiveObjects(snapshot: SceneSnapshot): void {
     const seen = new Set<string>();
     this.activeObjects = [];
     for (const obj of Object.values(snapshot.objects)) {
-      if (!shouldHide(obj)) continue;
+      if (!shouldHide(obj) || this.suppressed.has(obj.id)) continue;
       seen.add(obj.id);
       this.activeObjects.push(obj);
     }

@@ -62,11 +62,22 @@ export class PlateRenderer {
     }
   }
 
+  /** Objects another path (the static-camera eraser) already hides; their plates are skipped. */
+  private suppressed = new Set<string>();
+
+  setSuppressed(ids: ReadonlySet<string>): void {
+    let changed = ids.size !== this.suppressed.size;
+    if (!changed) for (const id of ids) if (!this.suppressed.has(id)) { changed = true; break; }
+    if (!changed) return;
+    this.suppressed = new Set(ids);
+    this.lastVersion = -1; // rebuild on the next update
+  }
+
   private rebuildActivePlates(snapshot: SceneSnapshot): void {
     const seen = new Set<string>();
     this.activePlates = [];
     for (const obj of Object.values(snapshot.objects)) {
-      if (!this.hasMoved(obj)) continue;
+      if (!this.hasMoved(obj) || this.suppressed.has(obj.id)) continue;
       for (const plate of obj.background) {
         seen.add(plate.id);
         this.activePlates.push(plate);

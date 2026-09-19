@@ -397,6 +397,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // physically removed, by inpainting their silhouette in the newest appearance frame.
   const staticEraser = new StaticCameraEraser(frameStore, { synthetic: () => tuning.value.syntheticDelete >= 1 });
   scene.add(staticEraser.group);
+  const eraserOwned = new Set<string>();
   const debugOverlay = new SceneDebugOverlay();
   debugOverlay.setVisible(false);
   scene.add(debugOverlay.group);
@@ -1349,7 +1350,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       // against live depth in its footprint is noise (e.g. floor/plane pixels coincidentally
       // within the depth-agreement tolerance), not the object - it would corrupt the frozen
       // mask the impostor/eraser still need. Tier D means "still there, being tracked".
-      if (stillAtOriginalSpot && obj.tier === 'D') silhouetteTracker.update(obj.id, depthFrameFromMap(latestDepth), obj);
+      // A synthetic-only plate (tier B via syntheticDelete) means the real object is STILL there:
+      // keep tracking it too, so a later Delete has a silhouette for the eraser to fill.
+      const stillThere = obj.tier === 'D' || (obj.background.length > 0 && obj.background.every((b) => b.provenance === 'synthetic_completion'));
+      if (stillAtOriginalSpot && stillThere) silhouetteTracker.update(obj.id, depthFrameFromMap(latestDepth), obj);
     }
     for (const id of lastTrackedPhysicalIds) {
       if (!trackedPhysicalIds.has(id)) silhouetteTracker.clear(id);
@@ -1378,6 +1382,10 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       const id = o.name.slice('object-appearance:'.length);
       if (isImpostorActive(impostors, id)) o.visible = false;
     });
+    // Objects the static eraser handled last frame need no hull/plate (their reprojected
+    // depth meshes are a poor fallback on an edge-on desk); one frame of lag is invisible.
+    plates.setSuppressed(eraserOwned);
+    backgroundHull.setSuppressed(eraserOwned);
     plates.update(frameSnapshot, cond.headPose);
     backgroundHull.update(frameSnapshot, cond.headPose);
 
@@ -1397,6 +1405,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       if (mask) eraserMasks.set(obj.id, mask);
     }
     staticEraser.update(frameSnapshot, eraserMasks, visualPose?.motionPx ?? 0, latestDepth?.width ?? 0, latestDepth?.height ?? 0, camera);
+    eraserOwned.clear();
+    for (const id of eraserMasks.keys()) if (staticEraser.isActive(id)) eraserOwned.add(id);
 
     shell.update(frameSnapshot, []);
     guideOverlay.update(guide, 0);
