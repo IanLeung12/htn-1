@@ -44,5 +44,34 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   const del = await evalApp((id) => window.__testHelpers!.dispatchIntent({ kind: 'delete', objectId: id }, 'test'), tableId!);
   await simPage.waitForTimeout(400);
   await simPage.screenshot({ path: path.join(OUT, '05-table-deleted.png') });
+
+  // Hand menu: bring the head back to a neutral forward-looking pose, raise
+  // the left hand ~0.35m in front of it with the palm turned toward the
+  // head, so the palm-up menu (src/render/hand-menu.ts) is visible.
+  //
+  // IWER's `relaxedHandPose` (the hand's rest pose) bakes a fixed rotation
+  // into the wrist joint's offset relative to the hand root, so both the
+  // approximate palm normal (cross product of two metacarpal joints, see
+  // src/xr/input.ts) and the menu quads' own facing (they inherit the
+  // wrist's *orientation* directly, see src/render/hand-menu.ts) are
+  // non-trivial functions of the hand root quaternion set via `setPose`.
+  // A -66 degree rotation about world +X (found by a small offline search
+  // over `relaxedHandPose`'s wrist transform - see docs/ui.md) is the best
+  // single-axis balance: the palm normal points ~0.77 toward the head *and*
+  // the button quads face ~0.78 toward the camera, so both the visibility
+  // gate and the on-screen legibility of the menu are satisfied at once.
+  await simPage.evaluate(() => {
+    window.__sim!.setHead({ x: 0, y: 1.6, z: 0 });
+    window.__sim!.lookAt({ x: 0, y: 1.6, z: -1 });
+    window.__sim!.setInputMode('hand');
+  });
+  const palmTowardHead = { x: -0.5446390350150271, y: 0, z: 0, w: 0.838670567945424 };
+  await simPage.evaluate((q) => {
+    window.__sim!.hand('left').setPose(q);
+    void window.__sim!.hand('left').moveTo({ x: 0, y: 1.6, z: -0.35 }, 0);
+  }, palmTowardHead);
+  await simPage.waitForTimeout(300);
+  await simPage.screenshot({ path: path.join(OUT, '06-hand-menu.png') });
+
   console.log('SCREENS', JSON.stringify({ cap, del: del.ok, tableId }));
 });
