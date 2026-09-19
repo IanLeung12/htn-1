@@ -186,6 +186,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
 
   const inXRHud = new InXRHud();
   scene.add(inXRHud.panel);
+  scene.add(inXRHud.label);
   const guideOverlay = new GuideOverlay();
   scene.add(guideOverlay.group);
 
@@ -461,6 +462,8 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
         depthAgeMs: depth.state.ageMs,
         mode: snapshot.mode,
         selectedObjectId: interaction.selectedId,
+        selectedObjectName: interaction.selectedId ? (snapshot.objects[interaction.selectedId]?.userName ?? null) : null,
+        selectedObjectPosition: interaction.selectedId ? (snapshot.objects[interaction.selectedId]?.currentPose.position ?? null) : null,
         lastRejection: interaction.lastRejection,
         guide,
       },
