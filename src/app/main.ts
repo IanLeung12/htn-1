@@ -33,6 +33,9 @@ import { InteractionController } from './interaction';
 import { createProxyPhysics } from '@/core/physics';
 import { createPhysicsBridge } from './physics-bridge';
 import { installVoiceAndMenu } from './voice-install';
+import { spawnAsset as spawnCatalogAsset } from './spawn';
+import { CATALOG } from './catalog';
+import { fitProxiesToBounds } from './catalog-fit';
 import { createDiagnostics, tryUpdateTargetFrameRate } from '@/render/diagnostics';
 import type { DiagnosticsState } from '@/render/diagnostics';
 import { RegionManager } from './regions';
@@ -140,6 +143,9 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     conditions,
     captureCleanPlate: (id) => captureCleanPlate(id),
     spawnPrimitive: (kind) => spawnPrimitive(kind === 'cube' ? 'box' : 'sphere'),
+    spawnAsset: (entryId) => {
+      spawnAsset(entryId);
+    },
     setMode: (mode) =>
       store.dispatch(
         { intent: { kind: 'setMode', mode }, source: 'voice', issuedAt: performance.now(), basedOnVersion: store.current.version },
@@ -239,6 +245,27 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     onSpawnCube: () => spawnPrimitive('box'),
     onSpawnSphere: () => spawnPrimitive('sphere'),
   });
+
+  function spawnAsset(entryId: string): string | null {
+    return spawnCatalogAsset(store, entryId, poseFromMatrix(camera), conditions());
+  }
+
+  // When a glTF finishes loading, refit the object's proxies to the measured bounds so
+  // grabbing, collision, and occlusion match what the user actually sees.
+  views.onModelLoaded = (objectId, bounds) => {
+    const obj = store.current.objects[objectId];
+    if (!obj) return;
+    const fitted = fitProxiesToBounds(obj, bounds);
+    store.dispatch(
+      {
+        intent: { kind: 'setProxies', objectId, interaction: fitted.interactionProxy, collision: fitted.collisionProxy, occlusion: fitted.occlusionProxy },
+        source: 'system',
+        issuedAt: performance.now(),
+        basedOnVersion: store.current.version,
+      },
+      conditions(),
+    );
+  };
 
   let spawnCounter = 0;
   function spawnPrimitive(kind: 'box' | 'sphere'): void {
@@ -513,6 +540,8 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       return guide;
     },
     voice: voiceAndMenu.voice,
+    catalog: CATALOG,
+    spawnAsset,
     dispose(): void {
       voiceAndMenu.dispose();
       void exitAR();
