@@ -15,6 +15,7 @@
  */
 import type { EditableObject, Pose, SceneSnapshot, Surface, VisualMode } from '@/core/types';
 import { add, distance, normalize, quatRotateVec3, scale } from '@/core/math';
+import { findCatalogEntry } from './catalog';
 
 export type MoveDirection = 'left' | 'right' | 'forward' | 'back' | 'up' | 'down';
 
@@ -26,6 +27,7 @@ export type VoiceCommand =
   | { kind: 'undo' }
   | { kind: 'redo' }
   | { kind: 'spawn'; shape: 'cube' | 'sphere' }
+  | { kind: 'spawnAsset'; entryId: string; label: string }
   | { kind: 'select'; objectId: string; label: string }
   | { kind: 'setMode'; mode: VisualMode }
   | { kind: 'listEditable' }
@@ -237,6 +239,18 @@ export function parseCommand(text: string, snapshot: SceneSnapshot, context: Voi
 
   m = norm.match(/^(?:spawn|add|create)(?: a| an)? (cube|sphere)$/);
   if (m) return { kind: 'spawn', shape: m[1] as 'cube' | 'sphere' };
+
+  // Catalog assets: "spawn/add/create/put a <catalog name>" - checked before
+  // the generic move/place patterns below so e.g. "put a chair" spawns a new
+  // chair, while "put the chair on the table" (an existing object) still
+  // falls through to the placeOn pattern (findCatalogEntry requires an
+  // exact/alias/unique-prefix match against the *whole* remaining phrase, so
+  // "chair on the table" does not match the "chair" entry).
+  m = norm.match(/^(?:spawn|add|create|put)(?: a| an| the)? (.+)$/);
+  if (m) {
+    const entry = findCatalogEntry(m[1] ?? '');
+    if (entry) return { kind: 'spawnAsset', entryId: entry.id, label: entry.name };
+  }
 
   m = norm.match(/^(show|hide) the room$/);
   if (m) {

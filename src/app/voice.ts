@@ -23,6 +23,13 @@ export interface VoiceActions {
   setMode(mode: VisualMode): void;
   /** Optional: app-level selection (there is no store Intent for "select"). */
   select?(objectId: string): void;
+  /**
+   * Optional: spawn a catalog asset (src/app/catalog.ts) by entry id. Wired
+   * by src/app/voice-install.ts to `AppHandle.spawnAsset` (src/app/spawn.ts).
+   * Optional so older AppHandle/action wiring keeps compiling; unwired,
+   * "spawn a chair" simply falls through to `handleRejected`-free no-op.
+   */
+  spawnAsset?(entryId: string): void;
 }
 
 export type VoiceCommandResult =
@@ -179,6 +186,9 @@ export function createVoiceController(opts: VoiceControllerOptions): VoiceContro
       case 'spawn':
         opts.actions.spawn(command.shape);
         return handleOk(command, `Spawning a ${command.shape}.`, text);
+      case 'spawnAsset':
+        opts.actions.spawnAsset?.(command.entryId);
+        return handleOk(command, `Spawning a ${command.label}.`, text);
       case 'select':
         opts.actions.select?.(command.objectId);
         return handleOk(command, `Selected ${command.label}.`, text);

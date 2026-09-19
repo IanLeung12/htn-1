@@ -247,6 +247,13 @@ export type Intent =
   | { kind: 'registerObject'; object: EditableObject }
   | { kind: 'updateBackground'; objectId: string; plate: BackgroundPlate }
   | { kind: 'setTier'; objectId: string; tier: EditTier; confidence: number }
+  | {
+      kind: 'setProxies';
+      objectId: string;
+      interaction: ProxyShape;
+      collision: ProxyShape;
+      occlusion: ProxyShape;
+    }
   | { kind: 'preview'; objectId: string; pose: Pose; action: EditAction }
   | { kind: 'clearPreview' };
 

@@ -10,7 +10,7 @@
  */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import type { EditableObject, ProxyShape, SceneSnapshot } from '@/core/types';
+import type { Aabb, EditableObject, ProxyShape, SceneSnapshot } from '@/core/types';
 
 const EPS_POS = 0.005;
 const EPS_ROT = 0.001;
@@ -79,6 +79,22 @@ function loadGltf(url: string, onReady: (scene: THREE.Object3D) => void): void {
   );
 }
 
+/**
+ * Local-space bounding box of a just-loaded (not-yet-parented) gltf scene
+ * root. Called before the scene is added under an object's root group, so
+ * `updateMatrixWorld` composes only the scene's own transform - i.e. this is
+ * the model's bounds in the object's local frame, exactly what
+ * `src/app/catalog-fit.ts`'s `fitProxiesToBounds` expects.
+ */
+function localBoundsOf(scene: THREE.Object3D): Aabb {
+  scene.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(scene);
+  return {
+    min: { x: box.min.x, y: box.min.y, z: box.min.z },
+    max: { x: box.max.x, y: box.max.y, z: box.max.z },
+  };
+}
+
 interface PreviewEntry {
   objectId: string;
   mesh: THREE.Mesh;
@@ -92,6 +108,24 @@ export class ObjectViews {
   hoveredId: string | null = null;
   grabbedId: string | null = null;
   selectedId: string | null = null;
+  /**
+   * Optional hook fired once a gltf-visual object's model finishes loading,
+   * with the model's local-space bounding box (see `localBoundsOf`). The app
+   * (src/app/main.ts) can wire this to dispatch a `setProxies` intent via
+   * `fitProxiesToBounds` so the object's interaction/collision/occlusion
+   * proxies match what was actually drawn, e.g.:
+   *
+   *   views.onModelLoaded = (objectId, bounds) => {
+   *     const obj = store.current.objects[objectId];
+   *     if (!obj) return;
+   *     const fitted = fitProxiesToBounds(obj, bounds);
+   *     store.dispatch({
+   *       intent: { kind: 'setProxies', objectId, interaction: fitted.interactionProxy, collision: fitted.collisionProxy, occlusion: fitted.occlusionProxy },
+   *       source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version,
+   *     }, conditions());
+   *   };
+   */
+  onModelLoaded?: (objectId: string, bounds: Aabb) => void;
 
   /** Call once per rendered frame with the current snapshot. */
   update(snapshot: SceneSnapshot): void {
@@ -141,11 +175,13 @@ export class ObjectViews {
     if (obj.visual.kind === 'gltf' && obj.visual.url && entry.gltfUrl !== obj.visual.url) {
       entry.gltfUrl = obj.visual.url;
       loadGltf(obj.visual.url, (scene) => {
+        const bounds = localBoundsOf(scene);
         // Replace placeholder children with the loaded asset.
         const solidGroup = entry!.solid as THREE.Group;
         solidGroup.clear();
         solidGroup.add(scene);
         collectStandardMaterials(entry!.solid, entry!.materials);
+        this.onModelLoaded?.(obj.id, bounds);
       });
     }
   }

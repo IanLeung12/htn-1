@@ -315,6 +315,43 @@ describe('resolver', () => {
   });
 });
 
+describe('setProxies', () => {
+  it('replaces all three proxies on the object (used by catalog-fit once a gltf model loads)', () => {
+    const resolver = createResolver();
+    const obj = makeObject({ id: 'catalog-1' });
+    const snapshot = makeSnapshot({ objects: { [obj.id]: obj } });
+    const interaction = { kind: 'box' as const, halfExtents: { x: 0.3, y: 0.4, z: 0.3 } };
+    const collision = { kind: 'box' as const, halfExtents: { x: 0.3, y: 0.4, z: 0.3 } };
+    const occlusion = { kind: 'box' as const, halfExtents: { x: 0.3, y: 0.4, z: 0.3 } };
+
+    const result = resolver.resolve(
+      snapshot,
+      env({ kind: 'setProxies', objectId: obj.id, interaction, collision, occlusion }, 0, 'system'),
+      makeConditions(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const updated = result.snapshot.objects[obj.id]!;
+    expect(updated.interactionProxy).toEqual(interaction);
+    expect(updated.collisionProxy).toEqual(collision);
+    expect(updated.occlusionProxy).toEqual(occlusion);
+  });
+
+  it('rejects setProxies for an unknown object', () => {
+    const resolver = createResolver();
+    const snapshot = makeSnapshot();
+    const shape = { kind: 'box' as const, halfExtents: { x: 0.1, y: 0.1, z: 0.1 } };
+    const result = resolver.resolve(
+      snapshot,
+      env({ kind: 'setProxies', objectId: 'nope', interaction: shape, collision: shape, occlusion: shape }, 0, 'system'),
+      makeConditions(),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('unknown_object');
+  });
+});
+
 describe('delete of non-physical objects', () => {
   it('allows deleting a spawned object with no background plates', () => {
     const resolver = createResolver();
