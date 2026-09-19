@@ -25,6 +25,7 @@ import { ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
 import { inFrame, projectPoint } from '@/capture/geom';
 import { quatRotateVec3 } from '@/core/math';
 import { createProjectiveMaterial, setMaterialFrame } from './projective';
+import { RoomShellRenderer, type RoomShellStats } from './room-shell';
 
 /** Padding added around a carved object's original box, except downward (never eats the floor). */
 const CARVE_EXPAND_M = 0.03;
@@ -158,7 +159,15 @@ export class ShellRenderer {
   readonly occluderGroup = new THREE.Group();
   /** Visible captured-shell meshes. Also rendered as part of the first pass. */
   readonly visibleGroup = new THREE.Group();
+  /**
+   * Room-reconstruction tiles (see render/room-shell.ts). Rendered as part of
+   * the same first pass as `visibleGroup`; kept as its own group only so it
+   * can be rebuilt independently (it is keyed off the room-shell FrameStore
+   * entry, not per-surface state).
+   */
+  readonly roomShellGroup: THREE.Group;
 
+  private readonly roomShell = new RoomShellRenderer();
   private readonly surfaceEntries = new Map<string, SurfaceEntry>();
   private readonly globalMeshEntries = new Map<string, GlobalMeshEntry>();
   private lastVersion = -1;
@@ -167,7 +176,9 @@ export class ShellRenderer {
   private carveBoxes: CarveBox[] = [];
   private carveSignatureValue = '';
 
-  constructor(private readonly frameStore?: FrameStore) {}
+  constructor(private readonly frameStore?: FrameStore) {
+    this.roomShellGroup = this.roomShell.group;
+  }
 
   update(snapshot: SceneSnapshot, globalMeshes: RawGlobalMesh[]): void {
     // Regions live inside the snapshot (see core/types SceneSnapshot.regions), so
@@ -189,6 +200,19 @@ export class ShellRenderer {
       this.syncSurfaces(snapshot);
     }
     this.syncGlobalMeshes(globalMeshes, snapshot.mode);
+    this.roomShell.rebuild(this.frameStore?.get(ROOM_SHELL_FRAME_ID), this.carveBoxes, this.carveSignatureValue);
+    this.roomShell.updateVisibility(snapshot);
+  }
+
+  /** Tile/vertex/texture-memory counters for the room reconstruction (see render/room-shell.ts), for diagnostics. */
+  roomShellStats(): RoomShellStats {
+    return this.roomShell.stats();
+  }
+
+  /** True once at least one room-shell frame exists: surfaces defer to the room-shell tiles instead of their own flat/projective tile. */
+  private hasRoomFrames(): boolean {
+    const frames = this.frameStore?.get(ROOM_SHELL_FRAME_ID);
+    return !!frames && frames.length > 0;
   }
 
   private syncSurfaces(snapshot: SceneSnapshot): void {
@@ -269,10 +293,18 @@ export class ShellRenderer {
     const region = regionForSurface(snapshot, surface.id);
     const visible = isVisibleShellState(region);
 
+    if (visible && this.hasRoomFrames()) {
+      // Room-shell tiles (render/room-shell.ts) already cover this surface
+      // with the full baked reconstruction - drop the old single-frame
+      // per-surface projective patch entirely rather than drawing both.
+      return;
+    }
+
     if (visible) {
-      // CAPTURED/HYBRID: texture from the nearest room-shell viewpoint that
-      // actually sees this surface, if one was ever captured (see
-      // AppHandle.captureRoomShell); otherwise fall back to the flat tile.
+      // CAPTURED/HYBRID, no room-shell frames yet: texture from the nearest
+      // room-shell viewpoint that actually sees this surface, if one was
+      // ever captured (see AppHandle.captureRoomShell); otherwise fall back
+      // to the flat tile.
       const roomFrames = this.frameStore?.get(ROOM_SHELL_FRAME_ID);
       const centre: Vec3 = {
         x: (surface.aabb.min.x + surface.aabb.max.x) / 2,
@@ -349,9 +381,11 @@ export class ShellRenderer {
 
       const material = mesh.material as THREE.MeshStandardMaterial;
       // Global mesh is always occlusion/collision-only in live-overlay mode;
-      // in captured-shell mode it can serve as the visible fallback shell
-      // where no semantic plane exists yet.
-      material.colorWrite = mode === 'captured-shell';
+      // in captured-shell mode it is a VISIBLE fallback shell only until real
+      // room-shell frames exist (once they do, render/room-shell.ts's tiles
+      // are the "wow mode" reconstruction and this raw scan mesh goes back
+      // to occlusion-only, so it never doubles up with/z-fights the tiles).
+      material.colorWrite = mode === 'captured-shell' && !this.hasRoomFrames();
     }
     for (const [id, entry] of this.globalMeshEntries) {
       if (!seen.has(id)) {
