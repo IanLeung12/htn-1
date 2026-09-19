@@ -107,6 +107,8 @@ export interface FrameCorrection {
   extentM: number;
   /** World y of the dominant plane in the published frame (0 unless `trustPose`, where it is the plane's height in the pose frame). */
   groundY: number;
+  /** `trustPose` only: the dominant plane's unit normal in the published (pose) frame, pointing up. */
+  normalWorld?: Vec3;
   at: Millis;
 }
 /** Horizontal planes higher than this above the ground are ceilings/shelves, not tables. */
@@ -343,6 +345,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     let worldRotation = depth.pose.rotation;
     let worldPosition: Vec3 = depth.pose.position;
     let groundY = 0;
+    let normalWorld: Vec3 | undefined;
 
     if (dominant && dominant.inlierFraction >= FLOOR_MIN_INLIER_FRACTION && dominant.inliers.length >= tuning.planeMinInliers) {
       floorInliers = dominant.inliers.length;
@@ -356,6 +359,8 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
         const c = quatRotateVec3(depth.pose.rotation, dominant.centroid);
         groundY = c.y + depth.pose.position.y;
         this.heightM = depth.pose.position.y - groundY;
+        const nw = quatRotateVec3(depth.pose.rotation, dominant.normal);
+        normalWorld = nw.y < 0 ? { x: -nw.x, y: -nw.y, z: -nw.z } : nw;
       } else {
         // World frame from the dominant plane: pitch/roll from its normal, y = 0 on the plane,
         // yaw from the reported pose (depth cannot observe heading).
@@ -364,7 +369,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
         worldPosition = { x: depth.pose.position.x, y: heightM, z: depth.pose.position.z };
         this.heightM = heightM;
       }
-      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, rollCorroborated: false, extentM, groundY, at: now };
+      this.correction = { pitchRad: att.pitchRad, rollRad: att.rollRad, heightM, confidence, inliers: dominant.inliers.length, rollCorroborated: false, extentM, groundY, normalWorld, at: now };
       if (this.floorEstimated.origin !== 'ransac' || Math.abs(this.floorEstimated.confidence - confidence) > 0.01) {
         floorChanged = true;
         this.floorEstimated = { surface: this.floorEstimated.surface, confidence, origin: 'ransac' };

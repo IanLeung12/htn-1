@@ -98,3 +98,35 @@ describe('ZedSdkPoseSource floor policy', () => {
     expect(src.quality.confidence).toBeCloseTo(0.3, 9);
   });
 });
+
+describe('ZedSdkPoseSource residual tilt', () => {
+  it('levels a desk plane tilted 2 degrees in the tracked frame by rotating the published pose about the camera', async () => {
+    const { client, push } = stubClient();
+    const src = new ZedSdkPoseSource(client, { cameraHeightM: 0.75 });
+    await src.start();
+    push({ pose: identityAt(0, 0.8, 0), floorY: 0 }, 100);
+    // Desk normal leaning 2 degrees towards -z (the far desk rises).
+    const a = (2 * Math.PI) / 180;
+    const normal = { x: 0, y: Math.cos(a), z: Math.sin(a) }; // in the RAW tracked frame
+    const rotBy = (q: { x: number; y: number; z: number; w: number }, v: { x: number; y: number; z: number }) => {
+      const { x, y, z, w } = q;
+      const ix = w * v.x + y * v.z - z * v.y;
+      const iy = w * v.y + z * v.x - x * v.z;
+      const iz = w * v.z + x * v.y - y * v.x;
+      const iw = -x * v.x - y * v.y - z * v.z;
+      return { x: ix * w + iw * -x + iy * -z - iz * -y, y: iy * w + iw * -y + iz * -x - ix * -z, z: iz * w + iw * -z + ix * -y - iy * -x };
+    };
+    // The estimator reports the normal in the PUBLISHED frame, i.e. already rotated by the current correction.
+    for (let i = 0; i < 40; i++) src.applyTilt(rotBy(src.tiltQuat, normal), 1, 5000, 3);
+    expect((src.tiltRad * 180) / Math.PI).toBeGreaterThan(1.7); // 0.2 degree dead zone
+    // The published rotation now maps the tilted normal to straight up.
+    const up = rotBy(src.pose.rotation, normal);
+    expect(up.y).toBeGreaterThan(0.99998);
+    expect(src.pose.position.y).toBeCloseTo(0.8, 9);
+    // A steep plane (15 degrees) is not the support and is ignored.
+    const before = src.tiltRad;
+    const b = (15 * Math.PI) / 180;
+    src.applyTilt({ x: 0, y: Math.cos(b), z: Math.sin(b) }, 1, 5000, 3);
+    expect(src.tiltRad).toBeCloseTo(before, 9);
+  });
+});

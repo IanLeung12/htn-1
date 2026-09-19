@@ -15,7 +15,8 @@
  * trackingOk follows the SDK's state ('OK') and drops when the bridge goes
  * quiet for `staleMs`.
  */
-import type { Millis, Pose } from '@/core/types';
+import type { Millis, Pose, Quat, Vec3 } from '@/core/types';
+import { cross, dot, normalize, quatMultiply, quatNormalize, quatRotateVec3, quatSlerp } from '@/core/math';
 import type { PoseQuality, PoseSource } from '../contract';
 import type { ZedBridgeClient, DecodedBridgeFrame } from './bridge-client';
 import { poseFromColumnMajor } from './protocol';
@@ -35,6 +36,12 @@ const PLANE_MIN_INLIERS = 500;
 const PLANE_MIN_EXTENT_M = 0.5;
 /** Ground-plane updates smaller than this are ignored (no per-run jitter of the whole world). */
 const PLANE_MIN_CHANGE_M = 0.03;
+/** Residual tilt between the tracked "up" and the dominant support plane is corrected up to this angle. */
+const TILT_MAX_RAD = (6 * Math.PI) / 180;
+/** Below this the tilt is noise. */
+const TILT_MIN_RAD = (0.2 * Math.PI) / 180;
+/** Smoothing weight per estimator run. */
+const TILT_SMOOTHING = 0.3;
 
 export class ZedSdkPoseSource implements PoseSource {
   pose: Pose = { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };
@@ -50,6 +57,14 @@ export class ZedSdkPoseSource implements PoseSource {
   private lastFrameAt = -Infinity;
   private rawPose: Pose | null = null;
   private unsubscribe: (() => void) | null = null;
+  /**
+   * Residual tilt correction (world rotation about the camera position) that makes the dominant
+   * support plane level: the SDK's gravity-aligned frame can differ from a desk by a degree or
+   * two, which puts a far desk 8 cm above a near one and low objects "under" the plane.
+   */
+  tiltQuat: Quat = { x: 0, y: 0, z: 0, w: 1 };
+  /** Current residual tilt applied (rad), for diagnostics. */
+  tiltRad = 0;
 
   constructor(private readonly client: ZedBridgeClient, opts: ZedSdkPoseSourceOptions) {
     this.cameraHeightM = opts.cameraHeightM;
@@ -68,6 +83,8 @@ export class ZedSdkPoseSource implements PoseSource {
     this.client.resetTracking();
     this.floorMode = 'unknown';
     this.floorOffsetM = 0;
+    this.tiltQuat = { x: 0, y: 0, z: 0, w: 1 };
+    this.tiltRad = 0;
   }
 
   async start(): Promise<void> {
@@ -93,8 +110,40 @@ export class ZedSdkPoseSource implements PoseSource {
     } else if (this.floorMode === 'sdk' && header.floorY !== null) {
       this.floorOffsetM = -header.floorY;
     }
-    this.pose = { position: { x: raw.position.x, y: raw.position.y + this.floorOffsetM, z: raw.position.z }, rotation: raw.rotation };
+    this.pose = this.compose(raw);
   };
+
+  /** Published pose = floor offset + residual tilt (rotation about the camera position, so the near desk stays put). */
+  private compose(raw: Pose): Pose {
+    return { position: { x: raw.position.x, y: raw.position.y + this.floorOffsetM, z: raw.position.z }, rotation: quatNormalize(quatMultiply(this.tiltQuat, raw.rotation)) };
+  }
+
+  /**
+   * Dominant support plane normal (published frame, pointing up). A residual tilt of up to
+   * TILT_MAX_RAD is folded into the published rotation, smoothed over runs; larger angles are
+   * not the support (a sloped surface, a bad fit) and are ignored.
+   */
+  applyTilt(normalWorld: Vec3, confidence: number, inliers: number, extentM: number): void {
+    if (!this.rawPose) return;
+    if (!(confidence >= PLANE_MIN_CONFIDENCE) || inliers < PLANE_MIN_INLIERS || extentM < PLANE_MIN_EXTENT_M) return;
+    const n = normalize(normalWorld);
+    const up: Vec3 = { x: 0, y: 1, z: 0 };
+    const c = Math.max(-1, Math.min(1, dot(n, up)));
+    const angle = Math.acos(c);
+    if (angle > TILT_MAX_RAD) return;
+    // Rotation taking n to up: axis n x up, angle acos(n.up); composed onto the existing correction.
+    let delta: Quat = { x: 0, y: 0, z: 0, w: 1 };
+    if (angle > TILT_MIN_RAD) {
+      const axis = normalize(cross(n, up));
+      const h = angle / 2;
+      delta = { x: axis.x * Math.sin(h), y: axis.y * Math.sin(h), z: axis.z * Math.sin(h), w: Math.cos(h) };
+    }
+    const target = quatNormalize(quatMultiply(delta, this.tiltQuat));
+    this.tiltQuat = quatSlerp(this.tiltQuat, target, TILT_SMOOTHING);
+    const tu = quatRotateVec3(this.tiltQuat, up);
+    this.tiltRad = Math.acos(Math.max(-1, Math.min(1, dot(tu, up))));
+    this.pose = this.compose(this.rawPose);
+  }
 
   /**
    * The surface estimator's dominant horizontal plane, at world y `groundY` (in the frame this
@@ -112,7 +161,7 @@ export class ZedSdkPoseSource implements PoseSource {
     if (this.floorMode === 'plane' && Math.abs(target - this.floorOffsetM) < PLANE_MIN_CHANGE_M) return;
     this.floorOffsetM = this.floorMode === 'plane' ? this.floorOffsetM + 0.5 * (target - this.floorOffsetM) : target;
     this.floorMode = 'plane';
-    if (this.rawPose) this.pose = { position: { x: this.rawPose.position.x, y: this.rawPose.position.y + this.floorOffsetM, z: this.rawPose.position.z }, rotation: this.rawPose.rotation };
+    if (this.rawPose) this.pose = this.compose(this.rawPose);
   }
 
   update(now: Millis): void {

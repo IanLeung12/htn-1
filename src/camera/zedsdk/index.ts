@@ -55,11 +55,12 @@ export function createZedSdkBackend(config: Pick<CameraAppConfig, 'bridgeUrl' | 
       if (!c || c.at === lastCorrectionAt) return;
       lastCorrectionAt = c.at;
       poseSource.applyGroundPlane(c.groundY, c.confidence, c.inliers, c.extentM);
+      if (c.normalWorld) poseSource.applyTilt(c.normalWorld, c.confidence, c.inliers, c.extentM);
     },
     statusLine() {
       const s = client.stats;
       if (!s.connected) return `zed-sdk bridge ${client.url}: ${s.error ?? 'connecting'}`;
-      return `zed-sdk ${s.source} ${s.fps.toFixed(0)} fps, ${(s.bytesPerSecond / 1e6).toFixed(1)} MB/s, transport ${s.transportMs.toFixed(0)} ms, decode ${s.decodeMs.toFixed(0)} ms, tracking ${poseSource.trackingState}, floor ${poseSource.floorMode}, valid ${(depthEstimator.validFraction * 100).toFixed(0)}%`;
+      return `zed-sdk ${s.source} ${s.fps.toFixed(0)} fps, ${(s.bytesPerSecond / 1e6).toFixed(1)} MB/s, transport ${s.transportMs.toFixed(0)} ms, decode ${s.decodeMs.toFixed(0)} ms, tracking ${poseSource.trackingState}, floor ${poseSource.floorMode}, tilt ${((poseSource.tiltRad * 180) / Math.PI).toFixed(1)} deg, valid ${(depthEstimator.validFraction * 100).toFixed(0)}%`;
     },
   };
   if (typeof window !== 'undefined') window.__zedBridge = backend;
