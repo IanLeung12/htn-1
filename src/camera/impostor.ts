@@ -23,6 +23,8 @@ import { appearanceFrameKey } from '@/capture/frame-store';
 import type { EditableObject, SceneSnapshot, Vec3 } from '@/core/types';
 import { add, quatRotateVec3, sub } from '@/core/math';
 import { projectPoint, sampleDepthNearest } from '@/capture/geom';
+import type { SilhouetteMask } from './edit/silhouette';
+import { cutoutFromMask } from './edit/mask-cutout';
 
 const EPS_POS = 0.005;
 const EPS_ROT = 0.001;
@@ -247,11 +249,25 @@ interface ImpostorEntry {
  * physical object (baked visual, single appearance frame), plus a faint
  * outline at its original pose. See module doc comment for why.
  */
+/** Supplies the tracked silhouette mask for an object, in its depth grid's `gridW x gridH` pixels (see `SilhouetteTracker.peek`). */
+export type MaskSource = (objectId: string) => { mask: SilhouetteMask; gridW: number; gridH: number } | undefined;
+
 export class ImpostorViews {
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, ImpostorEntry>();
+  private maskSource: MaskSource | undefined;
 
   constructor(private readonly frameStore: FrameStore) {}
+
+  /**
+   * Wires a per-object tracked silhouette mask (`./edit/silhouette.ts`) so
+   * the impostor cutout follows the object's actual shape rather than its
+   * occlusion box. Optional: without it, `cutoutFromFrame`'s box+depth
+   * cutout is used as before.
+   */
+  setMaskSource(source: MaskSource | undefined): void {
+    this.maskSource = source;
+  }
 
   update(snapshot: SceneSnapshot, camera: THREE.Camera, now: number): void {
     void now;
@@ -262,7 +278,7 @@ export class ImpostorViews {
       if (!posesDiffer(obj.originalPose, obj.currentPose)) continue;
 
       const frames = this.frameStore.get(appearanceFrameKey(obj.id));
-      const frame = frames && frames.length > 0 ? frames[0] : undefined;
+      const frame = frames && frames.length > 0 ? frames[frames.length - 1] : undefined;
       if (!frame) continue;
 
       seen.add(obj.id);
@@ -280,7 +296,8 @@ export class ImpostorViews {
       }
 
       if (entry.builtFromFrame !== frame) {
-        const cutout = cutoutFromFrame(frame, obj);
+        const tracked = this.maskSource?.(obj.id);
+        const cutout = tracked ? cutoutFromMask(frame, obj, tracked.mask, tracked.gridW, tracked.gridH) : cutoutFromFrame(frame, obj);
         if (!cutout) {
           entry.active = false;
           entry.mesh.visible = false;

@@ -69,6 +69,12 @@ import { surfaceBelow } from '@/core';
 import { CameraDiagnostics, type CameraDiagnosticsState } from './diagnostics';
 import { createDepthEstimator } from './depth';
 import { capTierForEstimatedDepth } from './tier-cap';
+import { SilhouetteTracker, depthFrameFromMap, type SilhouetteMask } from './edit/silhouette';
+import { checkObjectGone } from './edit/gone-check';
+import { StaticCameraEraser } from './edit/eraser';
+import { averageFrames } from './edit/average-frames';
+import { pushAppearanceFrame, APPEARANCE_FRAME_COUNT } from './edit/appearance';
+import { capTierForSingleViewpoint } from './edit/single-viewpoint-tier';
 
 export interface CameraAppOptions {
   container?: HTMLElement;
@@ -91,11 +97,22 @@ export interface CameraHandle {
   readonly diagnostics: CameraDiagnosticsState;
   /** World point under a CSS-pixel position on the overlay canvas (floor hit, or default depth). */
   worldAtPixel(clientX: number, clientY: number): Vec3;
+  /**
+   * Inverse of `worldAtPixel`'s NDC step: projects a world point through the current overlay
+   * camera to normalized device coordinates ([-1, 1], y up), or null if it's behind the
+   * camera. Also useful for tests/diagnostics that need to know where something rendered
+   * (e.g. sampling the video/canvas at the screen position of a discovered object).
+   */
+  projectToNdc(worldPos: Vec3): { x: number; y: number } | null;
+  /** `ndcToVideoUv`'s object-fit:cover mapping, exposed for tests/diagnostics. */
+  ndcToVideoUv(ndcX: number, ndcY: number): { u: number; v: number };
+  /** Debug: world positions of the static-camera eraser's current quads (tests/diagnostics). */
+  debugEraserPositions(): { pos: Vec3; visible: boolean }[];
   /** Change the camera height above the floor (metres). */
   setCameraHeight(h: number): void;
   setFovY(rad: number): void;
   /** Renderer-side counts for tests/diagnostics (hull meshes drawn over the video, object views). */
-  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number; impostors: number };
+  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number; impostors: number; eraserActive: number; masksTracked: number };
   /** Live tunables (persisted in localStorage; `t` toggles the slider panel). */
   readonly tuning: TuningStore;
   /** World point the estimated depth sees at a canvas NDC position (snapped onto the surface below); null without depth. */
@@ -148,6 +165,11 @@ const SPAWN_MAX_M = 2.0;
 const MULTI_SHOT_COUNT = 3;
 const MULTI_SHOT_BEARING_RAD = (16 * Math.PI) / 180;
 const MULTI_SHOT_TIMEOUT_MS = 8000;
+/** Static-camera `Capture plate`: shots averaged for noise reduction, spread over ~1 s. */
+const AVERAGE_SHOT_COUNT = 6;
+const AVERAGE_SHOT_INTERVAL_MS = 166;
+/** How far a discovered object may drift from its registered pose (physics settle, not a drag) and still count as "present, keep tracking its silhouette". */
+const STILL_AT_ORIGINAL_SPOT_M = 0.03;
 
 function bearingDelta(a: Pose, b: Pose): number {
   const fa = quatRotateVec3(a.rotation, { x: 0, y: 0, z: -1 });
@@ -275,6 +297,23 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // Camera-facing impostors for moved real objects (a single-view depth mesh looks edge-on).
   const impostors = new ImpostorViews(frameStore);
   scene.add(impostors.group);
+  // Per-object depth-blob silhouette, tracked (median of last 5) while the object sits at its
+  // original pose; frozen once it moves/is deleted so the impostor cutout and the static-camera
+  // eraser both use the object's actual shape instead of its occlusion box (docs/general-camera).
+  const silhouetteTracker = new SilhouetteTracker();
+  let lastTrackedPhysicalIds = new Set<string>();
+  impostors.setMaskSource((objectId) => {
+    const mask = silhouetteTracker.peek(objectId);
+    const grid = depthEstimator.latest;
+    if (!mask || !grid) return undefined;
+    return { mask, gridW: grid.width, gridH: grid.height };
+  });
+  // Static-camera fast path for Delete: composites the clean-plate frame's own pixels into the
+  // tracked silhouette instead of BackgroundHull's reprojected 3D depth mesh (exact when the
+  // camera hasn't moved). A world-space quad in the main scene (see edit/eraser.ts), drawn over
+  // the hull's own (renderOrder 0.5-1) meshes.
+  const staticEraser = new StaticCameraEraser(frameStore);
+  scene.add(staticEraser.group);
   const debugOverlay = new SceneDebugOverlay();
   debugOverlay.setVisible(false);
   scene.add(debugOverlay.group);
@@ -498,6 +537,18 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   hintEl.style.display = headless ? 'none' : 'block';
   container.appendChild(hintEl);
   let lastHint = '';
+  /**
+   * A one-shot status hint (e.g. from `Capture plate`) that overrides `workflowHint()`'s
+   * per-frame, selection-derived text for `ttlMs`: without this, the periodic 250ms diag
+   * tick below recomputes `workflowHint()` (which knows nothing about "just captured" and
+   * often has no selection to key off of) and stomps a directly-set message within one tick.
+   */
+  let transientHint: { text: string; expiresAt: number } | null = null;
+  function setTransientHint(text: string, ttlMs = 4000): void {
+    transientHint = { text, expiresAt: performance.now() + ttlMs };
+    hintEl.textContent = text;
+    lastHint = text;
+  }
   // `c`: calibrate depth scale from the object under the pointer (asks for its distance).
   // `c` twice: first the NEAR anchor (hover something close, e.g. a can at 0.5 m), then the FAR
   // anchor (the wall); together they pin scale and shift. `C` (shift) clears the anchors.
@@ -537,11 +588,15 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   };
   window.addEventListener('keydown', onOverlayKey);
   function workflowHint(): string {
+    if (transientHint) {
+      if (performance.now() < transientHint.expiresAt) return transientHint.text;
+      transientHint = null;
+    }
     const snap = store.current;
     const sel = interaction.selectedId ? snap.objects[interaction.selectedId] : undefined;
     if (!inSession) return 'Start the camera to begin.';
     if (sel && sel.origin === 'physical') {
-      if (!sel.visible) return `${sel.userName} is deleted: Restore or Undo brings it back.`;
+      if (!sel.visible) return `${sel.userName} is deleted: Restore or Undo brings it back (say "put it back").`;
       if (sel.tier === 'D') return `${sel.userName}: drag to move (tier D). To delete it, take it out of the picture, then press Capture plate.`;
       if (sel.tier === 'B' || sel.tier === 'C') return `${sel.userName}: clean plate captured (tier ${sel.tier}); Delete hides it behind the captured background.`;
       if (sel.tier === 'E') return `${sel.userName} has no support surface; only restore/undo.`;
@@ -781,7 +836,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   async function prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }> {
     const obj = store.current.objects[objectId];
     if (!obj) return { tier: 'E', donorFraction: 0 };
-    await captureObjectAppearance(objectId);
+    // Seed up to APPEARANCE_FRAME_COUNT live frames right away: with a static camera they are
+    // near-identical (still useful noise reduction for the impostor cutout via SilhouetteTracker's
+    // median); with a moving one each capture is a different viewpoint.
+    for (let i = 0; i < APPEARANCE_FRAME_COUNT; i++) {
+      await captureObjectAppearance(objectId);
+    }
     const frame = await cameraFrameSource.capture(poseSource.pose);
     if (!frame) return { tier: obj.tier, donorFraction: 0 };
     const support = obj.supportSurfaces[0] ? store.current.surfaces[obj.supportSurfaces[0]] : undefined;
@@ -808,15 +868,30 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
    * adds visual tracking). Estimated depth caps the tier (docs: truthfulness
    * contract) via `capTierForEstimatedDepth`.
    */
-  async function captureCleanPlate(objectId: string): Promise<{ tier: string; coverage: number }> {
+  async function captureCleanPlate(objectId: string): Promise<{ tier: string; coverage: number; blocked?: boolean }> {
     const snapshot = store.current;
     const obj = snapshot.objects[objectId];
     if (!obj) return { tier: 'E', coverage: 0 };
     const supportSurface = obj.supportSurfaces[0] ? snapshot.surfaces[obj.supportSurfaces[0]] : undefined;
-    // A static camera gets one shot. A moving one (orientation/visual pose) is asked for
-    // MULTI_SHOT_COUNT shots from bearings at least MULTI_SHOT_BEARING_RAD apart, which is
-    // what the multi-view agreement check in tier-cap.ts needs to lift the tier-B cap.
-    const shots = poseSource.quality.mode === 'static' ? 1 : MULTI_SHOT_COUNT;
+
+    // Verify the object is actually gone before spending a capture on it: a static camera
+    // cannot re-check from another angle the way a moving XR headset can (edit/gone-check.ts).
+    const latestForGoneCheck = depthEstimator.latest;
+    if (latestForGoneCheck) {
+      const previousBlobDepthM = silhouetteTracker.peek(objectId)?.blobDepthM;
+      const goneCheck = checkObjectGone(depthFrameFromMap(latestForGoneCheck), obj, supportSurface, previousBlobDepthM);
+      if (!goneCheck.gone && goneCheck.reason === 'still-present') {
+        setTransientHint('Remove the object from the desk, then press Capture plate again.');
+        return { tier: obj.tier, coverage: 0, blocked: true };
+      }
+    }
+
+    // A static camera gets one (noise-reduced) shot: several quick grabs from the same
+    // viewpoint, averaged (edit/average-frames.ts). A moving one (orientation/visual pose) is
+    // asked for MULTI_SHOT_COUNT shots from bearings at least MULTI_SHOT_BEARING_RAD apart,
+    // which is what the multi-view agreement check in tier-cap.ts needs to lift the tier-B cap.
+    const isStatic = poseSource.quality.mode === 'static';
+    const shots = isStatic ? 1 : MULTI_SHOT_COUNT;
     const viewpoints: Pose[] = [];
     guide = makeActiveGuide(obj, 1, shots, poseSource.pose);
     let shotIndex = 0;
@@ -826,6 +901,16 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       },
       async capture(): Promise<CameraFrame | null> {
         shotIndex += 1;
+        if (isStatic) {
+          const raw: CameraFrame[] = [];
+          for (let i = 0; i < AVERAGE_SHOT_COUNT; i++) {
+            const f = await cameraFrameSource.capture(poseSource.pose);
+            if (f) raw.push(f);
+            if (i < AVERAGE_SHOT_COUNT - 1) await new Promise((r) => setTimeout(r, AVERAGE_SHOT_INTERVAL_MS));
+          }
+          viewpoints.push(poseSource.pose);
+          return raw.length > 0 ? averageFrames(raw) : null;
+        }
         if (shotIndex > 1) {
           const previous = viewpoints[viewpoints.length - 1];
           guide = { ...makeActiveGuide(obj, Math.min(shotIndex, shots), shots, poseSource.pose), hint: 'Move the camera to one side, keep the spot in view' };
@@ -843,7 +928,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       for (let i = 0; i < shots; i++) plan.push(poseSource.pose);
       const acquired = await capture.acquireCleanPlate({ object: obj, supportSurface, viewpoints: plan }, shotSource);
       const verified = await capture.verify(acquired, [], cameraFrameSource);
-      const capped = capTierForEstimatedDepth(acquired.plate, verified, acquired.frames);
+      const capped = capTierForSingleViewpoint(capTierForEstimatedDepth(acquired.plate, verified, acquired.frames), acquired.frames);
       tierCapFrames.set(objectId, acquired.frames);
       store.dispatch(
         { intent: { kind: 'updateBackground', objectId, plate: capped.plate }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
@@ -853,24 +938,31 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
         { intent: { kind: 'setTier', objectId, tier: capped.tier, confidence: capped.confidence }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
         conditions(),
       );
+      setTransientHint(`Clean plate captured (tier ${capped.tier}): Delete is now available.`);
       return { tier: capped.tier, coverage: capped.plate.coverage };
     } finally {
       guide = INACTIVE_GUIDE;
     }
   }
 
+  /**
+   * Keeps up to `APPEARANCE_FRAME_COUNT` live frames (RGB + depth + pose) for a discovered
+   * object under `appearanceFrameKey` (see edit/appearance.ts): the impostor
+   * (src/camera/impostor.ts) uses the most recent one as the primary render path with a static
+   * camera; the depth-mesh appearance path (src/render/objects.ts) takes over once the camera
+   * has moved away from every retained frame's viewpoint.
+   */
   async function captureObjectAppearance(objectId: string): Promise<{ frames: number }> {
     const obj = store.current.objects[objectId];
     if (!obj) return { frames: 0 };
     const frame = await cameraFrameSource.capture(poseSource.pose);
-    const frames = frame ? [frame] : [];
+    if (!frame) return { frames: frameStore.get(appearanceFrameKey(objectId))?.length ?? 0 };
+    const frames = pushAppearanceFrame(frameStore.get(appearanceFrameKey(objectId)), frame, APPEARANCE_FRAME_COUNT);
     frameStore.put(appearanceFrameKey(objectId), frames);
-    if (frames.length > 0) {
-      store.dispatch(
-        { intent: { kind: 'setVisual', objectId, visual: { kind: 'baked' } }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
-        conditions(),
-      );
-    }
+    store.dispatch(
+      { intent: { kind: 'setVisual', objectId, visual: { kind: 'baked' } }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+      conditions(),
+    );
     return { frames: frames.length };
   }
 
@@ -1009,6 +1101,42 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     regionManager.recoverTrackingFallbacks(cond);
 
     const frameSnapshot = store.current;
+
+    // Track each present physical object's depth-blob silhouette against the
+    // latest depth map while it still sits at its original pose; once it
+    // moves/is hidden (or the depth briefly loses it, e.g. the user just
+    // lifted it away for Capture plate), tracking stops feeding new frames
+    // and `peek()` keeps returning the last frozen mask - the object's own
+    // shape, needed by the impostor cutout and the static-camera eraser
+    // below for exactly that moved/deleted state. Only forgotten (`clear`)
+    // once the object is gone from the scene entirely.
+    const trackedPhysicalIds = new Set<string>();
+    const latestDepth = depthEstimator.latest;
+    for (const obj of Object.values(frameSnapshot.objects)) {
+      if (obj.origin !== 'physical') continue;
+      trackedPhysicalIds.add(obj.id);
+      if (!latestDepth || !obj.visible) continue;
+      // Looser than the hull/impostor "has it moved" threshold (0.005 m, EPS_POS in
+      // impostor.ts): physics settle on a non-kinematic discovered object nudges it a
+      // centimetre or so even standing still, which must not stop live silhouette tracking.
+      const stillAtOriginalSpot =
+        Math.hypot(
+          obj.originalPose.position.x - obj.currentPose.position.x,
+          obj.originalPose.position.y - obj.currentPose.position.y,
+          obj.originalPose.position.z - obj.currentPose.position.z,
+        ) <= STILL_AT_ORIGINAL_SPOT_M;
+      // Also stop once a clean plate has been captured (tier D -> B/C): that means removal was
+      // already confirmed, so the object's real-world counterpart is gone and any further match
+      // against live depth in its footprint is noise (e.g. floor/plane pixels coincidentally
+      // within the depth-agreement tolerance), not the object - it would corrupt the frozen
+      // mask the impostor/eraser still need. Tier D means "still there, being tracked".
+      if (stillAtOriginalSpot && obj.tier === 'D') silhouetteTracker.update(obj.id, depthFrameFromMap(latestDepth), obj);
+    }
+    for (const id of lastTrackedPhysicalIds) {
+      if (!trackedPhysicalIds.has(id)) silhouetteTracker.clear(id);
+    }
+    lastTrackedPhysicalIds = trackedPhysicalIds;
+
     views.update(frameSnapshot);
     views.updatePreview(frameSnapshot, previewGroup);
     impostors.update(frameSnapshot, camera, now);
@@ -1020,6 +1148,24 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     });
     plates.update(frameSnapshot, cond.headPose);
     backgroundHull.update(frameSnapshot, cond.headPose);
+
+    // Static-camera fast path for Delete: composites the clean-plate frame's own pixels into
+    // the tracked silhouette (exact when the camera hasn't moved); a world-space quad drawn
+    // over the hull's own meshes. No-op (nothing built/shown) otherwise, so the hull stands.
+    const eraserMasks = new Map<string, SilhouetteMask>();
+    for (const obj of Object.values(frameSnapshot.objects)) {
+      if (obj.origin !== 'physical') continue;
+      const hidden = !obj.visible || Math.hypot(
+        obj.originalPose.position.x - obj.currentPose.position.x,
+        obj.originalPose.position.y - obj.currentPose.position.y,
+        obj.originalPose.position.z - obj.currentPose.position.z,
+      ) > 0.005;
+      if (!hidden) continue;
+      const mask = silhouetteTracker.peek(obj.id);
+      if (mask) eraserMasks.set(obj.id, mask);
+    }
+    staticEraser.update(frameSnapshot, eraserMasks, visualPose?.motionPx ?? 0, latestDepth?.width ?? 0, latestDepth?.height ?? 0, camera);
+
     shell.update(frameSnapshot, []);
     guideOverlay.update(guide, 0);
 
@@ -1111,6 +1257,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     quality.observe(sample);
 
     renderer.render(scene, camera);
+
     camera.getWorldDirection(tmpFwd);
     options.onFrame?.({ time, headPose: cond.headPose, snapshot: store.current, decision: quality.decision });
   });
@@ -1187,6 +1334,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     depthEstimator,
     pointer,
     diagnostics: diagState,
+    projectToNdc(worldPos) {
+      const v = new THREE.Vector3(worldPos.x, worldPos.y, worldPos.z).project(camera);
+      if (!Number.isFinite(v.x) || !Number.isFinite(v.y) || v.z > 1) return null;
+      return { x: v.x, y: v.y };
+    },
+    ndcToVideoUv,
+    debugEraserPositions: () => staticEraser.group.children.map((c) => ({ pos: c.position.clone(), visible: c.visible })),
     worldAtPixel(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
       const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
@@ -1211,8 +1365,19 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
         if (o.name.startsWith('object-appearance:') && o.visible && o.children.length > 1) appearanceActive += 1;
       });
       let impostorCount = 0;
-      for (const id of Object.keys(store.current.objects)) if (isImpostorActive(impostors, id)) impostorCount += 1;
-      return { hullChildren: backgroundHull.group.children.length, viewChildren: views.group.children.length, appearanceActive, impostors: impostorCount };
+      let masksTracked = 0;
+      for (const id of Object.keys(store.current.objects)) {
+        if (isImpostorActive(impostors, id)) impostorCount += 1;
+        if (silhouetteTracker.peek(id)) masksTracked += 1;
+      }
+      return {
+        hullChildren: backgroundHull.group.children.length,
+        viewChildren: views.group.children.length,
+        appearanceActive,
+        impostors: impostorCount,
+        eraserActive: staticEraser.activeCount,
+        masksTracked,
+      };
     },
     tuning,
     pickWorld,
