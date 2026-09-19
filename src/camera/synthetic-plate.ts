@@ -130,6 +130,35 @@ function bucketKey(cx: number, cz: number): string {
   return `${cx},${cz}`;
 }
 
+/** Up to this many donors the nearest-donor query scans them all instead of using the bucket grid. */
+const BRUTE_FORCE_DONOR_LIMIT = 4096;
+
+interface DonorBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+function donorBounds(donors: Donor[]): DonorBounds {
+  const b: DonorBounds = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+  for (let i = 0; i < donors.length; i++) {
+    const donor = donors[i]!;
+    if (donor.x < b.minX) b.minX = donor.x;
+    if (donor.x > b.maxX) b.maxX = donor.x;
+    if (donor.z < b.minZ) b.minZ = donor.z;
+    if (donor.z > b.maxZ) b.maxZ = donor.z;
+  }
+  return b;
+}
+
+/** Rings needed to reach the farthest donor from (x, z): the ring search never has to go further. */
+function maxRingFor(bounds: DonorBounds, x: number, z: number, bucketSize: number): number {
+  const dx = Math.max(Math.abs(bounds.minX - x), Math.abs(bounds.maxX - x));
+  const dz = Math.max(Math.abs(bounds.minZ - z), Math.abs(bounds.maxZ - z));
+  return Math.ceil(Math.max(dx, dz) / bucketSize) + 2;
+}
+
 /** Nearest donor to (x, z) in plane XZ, searching outward ring-by-ring through the bucket grid. */
 function nearestDonor(
   x: number,
@@ -137,13 +166,31 @@ function nearestDonor(
   donors: Donor[],
   index: Map<string, number[]>,
   bucketSize: number,
+  bounds: DonorBounds,
 ): Donor | undefined {
+  // Few donors (a sparse ring, e.g. a 3 % donor fraction on a cluttered desk): a linear scan
+  // is ~16k texels x N distances, far cheaper than ringing outward through empty buckets
+  // (each ring costs 8*ring string-keyed lookups; a 60-ring miss per texel took ~20 s and
+  // froze the page during Discover).
+  if (donors.length <= BRUTE_FORCE_DONOR_LIMIT) {
+    let best: Donor | undefined;
+    let bestDistSq = Infinity;
+    for (let i = 0; i < donors.length; i++) {
+      const donor = donors[i]!;
+      const distSq = (donor.x - x) * (donor.x - x) + (donor.z - z) * (donor.z - z);
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        best = donor;
+      }
+    }
+    return best;
+  }
   const cx0 = Math.floor(x / bucketSize);
   const cz0 = Math.floor(z / bucketSize);
   let best: Donor | undefined;
   let bestDistSq = Infinity;
   let foundAtRing = -1;
-  const maxRing = 2048;
+  const maxRing = maxRingFor(bounds, x, z, bucketSize);
 
   for (let ring = 0; ring <= maxRing; ring++) {
     for (let dx = -ring; dx <= ring; dx++) {
@@ -230,13 +277,14 @@ export function synthesizeSupportPlate(
 
   const bucketSize = donorGridSpacing(region, textureSize);
   const index = buildDonorIndex(donors, bucketSize);
+  const bounds = donorBounds(donors);
 
   const rgba = new Uint8ClampedArray(textureSize * textureSize * 4);
   for (let row = 0; row < textureSize; row++) {
     const z = region.min.z + ((row + 0.5) / textureSize) * (region.max.z - region.min.z);
     for (let col = 0; col < textureSize; col++) {
       const x = region.min.x + ((col + 0.5) / textureSize) * (region.max.x - region.min.x);
-      const donor = nearestDonor(x, z, donors, index, bucketSize);
+      const donor = nearestDonor(x, z, donors, index, bucketSize, bounds);
       const outIdx = (row * textureSize + col) * 4;
       if (donor) {
         rgba[outIdx] = donor.r;
