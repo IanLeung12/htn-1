@@ -28,6 +28,19 @@ export interface LocalDetectOptions {
   depthStepRel?: number;
   /** Id for the resulting volume. */
   id?: string;
+  /** Filled with intermediate values for diagnostics. */
+  trace?: LocalDetectTrace;
+}
+
+export interface LocalDetectTrace {
+  seed?: Vec3;
+  localMinY?: number;
+  registeredY?: number | null;
+  supportY?: number;
+  seedMoved?: boolean;
+  count?: number;
+  size?: Vec3;
+  reason?: string;
 }
 
 /** Top of the highest horizontal surface at or just below `p` whose footprint (padded) contains it; else 0 (the ground). */
@@ -83,8 +96,13 @@ export function detectVolumeAtPixel(
   const stepAbs = opts.depthStepAbsM ?? 0.03;
   const stepRel = opts.depthStepRel ?? 0.04;
 
+  const trace = opts.trace ?? {};
   const seed = pickFromMapRobust(map, px, py, frame);
-  if (!seed) return null;
+  if (!seed) {
+    trace.reason = 'no depth';
+    return null;
+  }
+  trace.seed = seed;
   // Support height: the lowest depth points around the click (the desk/floor the object stands
   // on is always visible around it). A registered surface is only trusted when it agrees with
   // that; transient planes fitted through can tops or a laptop lid sit at the object's own
@@ -92,6 +110,9 @@ export function detectVolumeAtPixel(
   const localMinY = lowestYAround(map, frame, seed, radius);
   const registered = supportTopAt(surfaces, seed);
   const support = registered.surface && registered.y <= localMinY + 0.06 ? registered : { y: localMinY, surface: null };
+  trace.localMinY = localMinY;
+  trace.registeredY = registered.surface ? registered.y : null;
+  trace.supportY = support.y;
   // Clicked the desk/floor itself: look for something standing just above it around the click.
   let sx = Math.floor(px);
   let sy = Math.floor(py);
@@ -111,7 +132,11 @@ export function detectVolumeAtPixel(
         }
       }
     }
-    if (!found) return null;
+    trace.seedMoved = found;
+    if (!found) {
+      trace.reason = 'on support, nothing above nearby';
+      return null;
+    }
   }
 
   const { width, height, metric } = map;
@@ -159,13 +184,21 @@ export function detectVolumeAtPixel(
     if (y > 0) push(i - width);
     if (y < height - 1) push(i + width);
   }
-  if (count < minCount) return null;
+  trace.count = count;
+  if (count < minCount) {
+    trace.reason = 'too few points';
+    return null;
+  }
   // The object stands on its support: extend the box down to the support top.
   minY = Math.min(minY, support.y);
   const dx = maxX - minX;
   const dy = maxY - minY;
   const dz = maxZ - minZ;
-  if (dx > maxSide || dy > maxSide || dz > maxSide) return null;
+  trace.size = { x: dx, y: dy, z: dz };
+  if (dx > maxSide || dy > maxSide || dz > maxSide) {
+    trace.reason = 'too large';
+    return null;
+  }
   // Depth from a single viewpoint sees only the near face: give a flat box a plausible depth.
   const minHalf = 0.015;
   return {

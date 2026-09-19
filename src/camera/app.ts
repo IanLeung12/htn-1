@@ -81,7 +81,7 @@ import { checkObjectGone } from './edit/gone-check';
 import { StaticCameraEraser } from './edit/eraser';
 import { averageFrames } from './edit/average-frames';
 import { pushAppearanceFrame, APPEARANCE_FRAME_COUNT, cameraMovedFromAppearance } from './edit/appearance';
-import { detectVolumeAtPixel } from './surfaces/local-detect';
+import { detectVolumeAtPixel, type LocalDetectTrace } from './surfaces/local-detect';
 import { capTierForSingleViewpoint } from './edit/single-viewpoint-tier';
 
 export interface CameraAppOptions {
@@ -131,6 +131,8 @@ export interface CameraHandle {
    * within 5 cm of the nearest valid depth (<= 24 px away) - the bare desk between matched edges.
    */
   pickWorldDetailed(ndcX: number, ndcY: number): PickResult | null;
+  /** Diagnostics for click-to-detect at an NDC position (no registration). */
+  detectAt(ndcX: number, ndcY: number): unknown;
   /** Capture appearance + synthetic support plate for a discovered real object (tier D) so it can be moved. */
   prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }>;
   /**
@@ -1596,6 +1598,17 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     tuning,
     pickWorld,
     pickWorldDetailed,
+    /** Diagnostics for click-to-detect at an NDC position (no registration). */
+    detectAt: (ndcX: number, ndcY: number) => {
+      const map = depthEstimator.latest;
+      if (!map) return { reason: 'no map' };
+      const { u, v } = ndcToVideoUv(ndcX, ndcY);
+      const px = Math.min(map.width - 1, Math.floor(u * map.width));
+      const py = Math.min(map.height - 1, Math.floor(v * map.height));
+      const trace: LocalDetectTrace = {};
+      const volume = detectVolumeAtPixel(map, px, py, surfaceEstimator.lastFrame, Object.values(store.current.surfaces), { trace, maxSideM: tuning.value.volumeMaxSideM });
+      return { px, py, trace, volume };
+    },
     prepareRealObject,
     calibrateNearFar(ndcNear, mNear, ndcFar, mFar) {
       if (!(depthEstimator instanceof ModelDepthEstimator) || !depthEstimator.lastInverse) return false;
