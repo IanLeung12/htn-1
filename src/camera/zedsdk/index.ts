@@ -5,6 +5,7 @@
  * tracking). `src/camera/app.ts` selects it for `config.source === 'zed-sdk'`.
  */
 import type { CameraAppConfig } from '../contract';
+import type { FrameCorrection } from '../surfaces/depth-surfaces';
 import { ZedBridgeClient } from './bridge-client';
 import { ZedSdkFrameSource } from './frame-source';
 import { ZedSdkDepthEstimator } from './depth';
@@ -27,6 +28,8 @@ export interface ZedSdkBackend {
   poseSource: ZedSdkPoseSource;
   /** One diagnostics line: bridge fps / latency / tracking / floor mode. */
   statusLine(): string;
+  /** Call after `surfaceEstimator.update`: feeds the fitted ground plane to the pose source's floor policy. */
+  onSurfaces(estimator: { correction: FrameCorrection | null }): void;
 }
 
 declare global {
@@ -41,11 +44,18 @@ export function createZedSdkBackend(config: Pick<CameraAppConfig, 'bridgeUrl' | 
   const frameSource = new ZedSdkFrameSource(client, { fovY: config.fovY });
   const poseSource = new ZedSdkPoseSource(client, { cameraHeightM: config.cameraHeightM });
   const depthEstimator = new ZedSdkDepthEstimator(client, { getPose: () => poseSource.pose });
+  let lastCorrectionAt = -Infinity;
   const backend: ZedSdkBackend = {
     client,
     frameSource,
     depthEstimator,
     poseSource,
+    onSurfaces(estimator) {
+      const c = estimator.correction;
+      if (!c || c.at === lastCorrectionAt) return;
+      lastCorrectionAt = c.at;
+      poseSource.applyGroundPlane(c.groundY, c.confidence, c.inliers, c.extentM);
+    },
     statusLine() {
       const s = client.stats;
       if (!s.connected) return `zed-sdk bridge ${client.url}: ${s.error ?? 'connecting'}`;

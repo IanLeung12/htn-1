@@ -124,7 +124,7 @@ export class CameraDiagnostics {
       `ground   conf ${s.floorConfidence.toFixed(2)}  raw pitch ${s.estPitchDeg === null ? '-' : s.estPitchDeg.toFixed(1)} roll ${s.estRollDeg === null ? '-' : s.estRollDeg.toFixed(1)}${s.rollCorroborated ? ' (wall-confirmed)' : ' (roll clamped)'}`,
       `attitude applied pitch ${s.appliedPitchDeg.toFixed(1)} roll ${s.appliedRollDeg.toFixed(1)}  ${s.attitudeNote}`,
       `scene    surfaces ${s.surfaceCount} (tables ${s.tables}, walls ${s.walls})  volumes ${s.volumeCount}  ransac ${s.surfaceRunMs.toFixed(0)} ms  motion ${s.motionPx.toFixed(1)} px`,
-      `tier cap ${s.tierCap} (estimated depth)  quality tier ${s.qualityTier}`,
+      `tier cap ${s.tierCap} (${s.tierCap === 'A' ? 'measured' : 'estimated'} depth)  quality tier ${s.qualityTier}`,
       `loop     p95 ${s.frameP95.toFixed(1)} ms  app ${s.appMs.toFixed(2)} ms  objects ${s.objectCount}`,
       `pointer  ${s.hoverId ?? '-'}${s.pointerWorld ? ` @ ${s.pointerWorld.x.toFixed(2)},${s.pointerWorld.y.toFixed(2)},${s.pointerWorld.z.toFixed(2)}` : ''}`,
     ];
