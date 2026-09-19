@@ -11,6 +11,21 @@ import { test, expect } from './fixtures';
 const OUT = path.join(process.cwd(), 'test-results', 'screens');
 
 /** Mean 0..255 luminance of an (x,y)-centered square patch of a PNG buffer. */
+function meanAbsDiff(a: PNG, b: PNG, x0: number, y0: number, w: number, h: number): number {
+  let sum = 0;
+  let n = 0;
+  for (let y = y0; y < y0 + h; y++) {
+    for (let x = x0; x < x0 + w; x++) {
+      const i = (y * a.width + x) * 4;
+      const la = (a.data[i]! + a.data[i + 1]! + a.data[i + 2]!) / 3;
+      const lb = (b.data[i]! + b.data[i + 1]! + b.data[i + 2]!) / 3;
+      sum += Math.abs(la - lb);
+      n++;
+    }
+  }
+  return n > 0 ? sum / n : 0;
+}
+
 function patchLuminance(png: PNG, cx: number, cy: number, radius: number): number {
   let sum = 0;
   let count = 0;
@@ -119,7 +134,7 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
     { x: RADIUS_M * Math.cos(ANGLE1), z: RADIUS_M * Math.sin(ANGLE1), path: path.join(OUT, '06b-table-deleted-side-view-45deg.png') },
   ];
 
-  const results: Array<{ path: string; truthPath: string; tableLuminance: number; backgroundLuminance: number }> = [];
+  const results: Array<{ path: string; truthPath: string; tableLuminance: number; backgroundLuminance: number; regionMad: number }> = [];
   for (const offset of headOffsets) {
     await simPage.evaluate(({ p, offset }) => {
       window.__sim!.setHead({ x: p.x + offset.x, y: p.y + 0.3, z: p.z + offset.z });
@@ -142,7 +157,10 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
     const truthPng = PNG.sync.read(fs.readFileSync(truthPath));
     const tableLuminance = patchLuminance(png, centerX, centerY, 6);
     const backgroundLuminance = patchLuminance(truthPng, centerX, centerY, 6);
-    results.push({ path: offset.path, truthPath, tableLuminance, backgroundLuminance });
+    // Region-wide check: mean absolute luminance difference over a 300x300 window
+    // around the deleted object's centre (covers its whole silhouette at 1.2 m).
+    const regionMad = meanAbsDiff(png, truthPng, centerX - 150, centerY - 150, 300, 300);
+    results.push({ path: offset.path, truthPath, tableLuminance, backgroundLuminance, regionMad });
   }
 
   console.log('SCREENS', JSON.stringify({ cap, del: del.ok, tableId, roomShell, results }));
@@ -155,6 +173,7 @@ test('visual smoke screenshots', async ({ evalApp, simPage }) => {
   // truth - i.e. the deleted table reads as truly gone, not just plausible.
   for (const r of results) {
     expect(Math.abs(r.tableLuminance - r.backgroundLuminance)).toBeLessThanOrEqual(12);
+    expect(r.regionMad, `silhouette region should match ground truth: ${r.path}`).toBeLessThanOrEqual(12);
   }
 
   // Hand menu: bring the head back to a neutral forward-looking pose, raise

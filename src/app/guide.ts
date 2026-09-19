@@ -17,7 +17,7 @@ import type { CameraFrameSource } from '@/capture/contract';
 import { footprintFromProxy } from '@/capture';
 import type { EditableObject, Pose, Quat, Surface, Vec3 } from '@/core/types';
 
-const CAPTURE_COUNT = 4;
+const CAPTURE_COUNT = 6; // full circle at 60 degree steps so hull coverage does not depend on the head bearing
 const VERIFY_COUNT = 3;
 const ARC_STEP_RAD = Math.PI / 3; // 60 degrees
 const HEIGHT_MIN_M = 1.2;
@@ -79,7 +79,7 @@ export function planCaptureViewpoints(
 
   const capture: Pose[] = [];
   for (let i = 0; i < CAPTURE_COUNT; i++) {
-    const t = i / (CAPTURE_COUNT - 1);
+    const t = (i % 2 === 0 ? 0 : 1) * 0.6 + (i / (CAPTURE_COUNT - 1)) * 0.4; // alternate low/high, drift outward
     const angle = bearing0 + i * ARC_STEP_RAD;
     const height = HEIGHT_MIN_M + t * (HEIGHT_MAX_M - HEIGHT_MIN_M);
     const dist = DIST_MIN_M + t * (DIST_MAX_M - DIST_MIN_M);
