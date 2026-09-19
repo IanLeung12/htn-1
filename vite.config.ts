@@ -19,7 +19,7 @@ export default defineConfig(async ({ mode }) => {
       // @iwer/sem bundles its own three copy; force one instance so scene objects interoperate.
       dedupe: ['three'],
     },
-    server: { port: 5173, strictPort: true },
+    server: { port: 5177, strictPort: true },
     build: {
       target: 'es2022',
       sourcemap: true,
