@@ -20,7 +20,7 @@ export default defineConfig(async ({ mode }) => {
       dedupe: ['three'],
     },
     server: {
-      port: 5179,
+      port: 5183,
       strictPort: true,
       proxy: {
         // calib.stereolabs.com doesn't send CORS headers, so the ZED
