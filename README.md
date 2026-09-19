@@ -17,7 +17,10 @@ current status and decisions.
 - Proxy physics: released objects settle onto tables and floors and push each other apart.
 - Voice commands ("delete the lamp", "move the cube up 20 cm", "what can I edit") and a palm menu.
 - Region state machine that reveals live reality when a hand or person crosses a captured region.
-- Quality watchdogs, on-device diagnostics, persistence across reloads.
+- Deleting a physical object reprojects the clean-plate RGB-D frames into its silhouette, so it
+  reads as gone from any angle inside the verified envelope; moving one carries its captured look.
+- Two-hand move, yaw, and tier-gated scale; spawnable glTF catalog with proxies fitted on load.
+- Quality watchdogs, on-device diagnostics, persistent room anchor, persistence across reloads.
 
 ## Quick start
 
