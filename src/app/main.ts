@@ -178,7 +178,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   scene.add(plates.group);
 
   const shell = new ShellRenderer(frameStore);
-  scene.add(shell.occluderGroup, shell.visibleGroup);
+  scene.add(shell.occluderGroup, shell.visibleGroup, shell.roomShellGroup);
 
   const backgroundHull = new BackgroundHull(frameStore);
   scene.add(backgroundHull.group);
@@ -500,13 +500,40 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       return { framesCaptured: 0 };
     }
     const plan = planRoomShellViewpoints(store.current);
-    const frames: CameraFrame[] = [];
-    for (const viewpoint of plan.viewpoints) {
-      const frame = await source.capture(viewpoint);
-      if (frame) frames.push(frame);
+
+    // Reuse the same CaptureGuide state clean-plate capture drives (see
+    // src/app/guide.ts) so the HUD walks a real user through every planned
+    // room-orbit viewpoint on device, one step at a time - there is no
+    // EditableObject here, so the guide state is built directly rather than
+    // via `makeActiveGuide`.
+    let step = 0;
+    const total = plan.viewpoints.length;
+    const stepHint = (n: number): string => `Walk to viewpoint ${n}/${total} and look around the room`;
+    guide = {
+      active: true,
+      objectId: null,
+      step: 1,
+      total,
+      targetPose: plan.viewpoints[0] ?? poseFromMatrix(camera),
+      hint: stepHint(1),
+    };
+    const guidedSource = wrapSourceForGuide(source, (viewpoint) => {
+      step += 1;
+      const target = plan.viewpoints[Math.min(step - 1, total - 1)] ?? viewpoint ?? poseFromMatrix(camera);
+      guide = { active: true, objectId: null, step, total, targetPose: target, hint: stepHint(step) };
+    });
+
+    try {
+      const frames: CameraFrame[] = [];
+      for (const viewpoint of plan.viewpoints) {
+        const frame = await guidedSource.capture(viewpoint);
+        if (frame) frames.push(frame);
+      }
+      frameStore.put(ROOM_SHELL_FRAME_ID, frames);
+      return { framesCaptured: frames.length };
+    } finally {
+      guide = INACTIVE_GUIDE;
     }
-    frameStore.put(ROOM_SHELL_FRAME_ID, frames);
-    return { framesCaptured: frames.length };
   }
 
   // ---- Frame loop -----------------------------------------------------
@@ -588,6 +615,10 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       diagState.anchorLocalized = roomAnchor.localized;
       diagState.anchorRelocalizationMs = roomAnchor.relocalizationMs;
       diagState.anchorPersistentHandle = roomAnchor.hasPersistentHandle;
+      const roomShellStats = shell.roomShellStats();
+      diagState.roomShellTiles = roomShellStats.tiles;
+      diagState.roomShellVertices = roomShellStats.vertices;
+      diagState.roomShellTexturesMB = roomShellStats.texturesMB;
       diagnostics.update(diagState);
     }
 

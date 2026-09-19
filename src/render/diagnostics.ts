@@ -60,6 +60,15 @@ export interface DiagnosticsState {
   anchorRelocalizationMs: number | null;
   /** RoomAnchor.hasPersistentHandle: a persistent anchor handle was obtained (this session or restored). */
   anchorPersistentHandle: boolean;
+  /**
+   * Room-shell reconstruction stats (see render/room-shell.ts's
+   * `RoomShellRenderer.stats()`), additive/optional so existing callers
+   * (e.g. `getLandingDiagnosticLines` below, which builds a state before any
+   * shell exists) do not need to supply them.
+   */
+  roomShellTiles?: number;
+  roomShellVertices?: number;
+  roomShellTexturesMB?: number;
 }
 
 export interface Diagnostics {
@@ -115,6 +124,12 @@ function buildLines(state: DiagnosticsState): string[] {
       `  relocalization: ${state.anchorRelocalizationMs === null ? '—' : `${fmtMs(state.anchorRelocalizationMs, 0)}ms`}` +
       `  persistent handle: ${state.anchorPersistentHandle ? 'yes' : 'no'}`,
   );
+
+  if (state.roomShellTiles !== undefined || state.roomShellVertices !== undefined || state.roomShellTexturesMB !== undefined) {
+    lines.push(
+      `room shell: tiles=${state.roomShellTiles ?? 0} vertices=${state.roomShellVertices ?? 0} textures=${fmtMs(state.roomShellTexturesMB ?? 0)}MB`,
+    );
+  }
 
   const recent = state.qualityHistory.slice(-5);
   if (recent.length === 0) {
