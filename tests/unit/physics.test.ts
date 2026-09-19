@@ -49,6 +49,30 @@ function advance(
 }
 
 describe('createProxyPhysics', () => {
+  it('supports an object whose footprint sits just past an estimated table edge (support margin)', () => {
+    // A depth-camera desk box ends at the last observed point (z = -0.4 here, the sensor's
+    // minimum range); a cube spawned at z = -0.33 overhangs that edge by 3 cm and must still
+    // rest on the desk instead of falling through to the floor.
+    const table = makeSurface({
+      id: 'desk',
+      label: 'table',
+      orientation: 'horizontal',
+      aabb: { min: { x: -1, y: 0.7, z: -2 }, max: { x: 1, y: 0.71, z: -0.4 } },
+    });
+    const obj = box('cube', 0.9);
+    obj.currentPose.position.z = -0.33;
+    obj.originalPose.position.z = -0.33;
+    const snapshot = makeSnapshot({ objects: { cube: obj }, surfaces: { desk: table } });
+    const { snapshot: final } = advance(createProxyPhysics(), snapshot, 1000);
+    expect((final.objects.cube as EditableObject).currentPose.position.y).toBeCloseTo(0.81, 2);
+    // Well past the margin it falls to the floor as before.
+    const far = box('far', 0.9);
+    far.currentPose.position.z = -0.1;
+    far.originalPose.position.z = -0.1;
+    const { snapshot: final2 } = advance(createProxyPhysics(), makeSnapshot({ objects: { far }, surfaces: { desk: table } }), 1000);
+    expect((final2.objects.far as EditableObject).currentPose.position.y).toBeCloseTo(0.1, 2);
+  });
+
   it('settles a dropped object onto a table top within 1s and then sleeps', () => {
     const table = makeSurface({
       id: 'table',
