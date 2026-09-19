@@ -82,6 +82,11 @@ interface TwoHandInfo {
 export class InteractionController {
   hoveredId: string | null = null;
   selectedId: string | null = null;
+
+  /** Select without grabbing (click-to-detect selects the object it just registered). */
+  select(objectId: string | null): void {
+    this.selectedId = objectId;
+  }
   lastRejection: RejectionInfo | null = null;
 
   private readonly grabs = new Map<Handedness, GrabInfo>();

@@ -46,7 +46,7 @@ import { RegionManager } from '@/app/regions';
 import { INACTIVE_GUIDE, makeActiveGuide } from '@/app/guide';
 import { createCapturePipeline, createPlateTextureRegistry } from '@/capture';
 import { appearanceFrameKey, createFrameStore, ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
-import type { CameraFrame, CameraFrameSource } from '@/capture/contract';
+import type { CameraFrame, CameraFrameSource, DetectedVolume } from '@/capture/contract';
 import type { CameraAppConfig, DepthEstimator, FrameSource, PoseSource, SurfaceEstimator } from './contract';
 import { DEFAULT_CAMERA_CONFIG } from './contract';
 import { createFrameSource } from './frame-source';
@@ -72,7 +72,7 @@ import { TuningPanel } from './tuning-panel';
 import { synthesizeSupportPlate, tierForSyntheticPlate } from './synthetic-plate';
 import { footprintFromProxy } from '@/capture';
 import { pickFromMapRobust, pickOnSurfaceThroughHole, type PickResult } from './pick';
-import { surfaceBelow } from '@/core';
+import { raycastProxies, surfaceBelow } from '@/core';
 import { CameraDiagnostics, type CameraDiagnosticsState } from './diagnostics';
 import { createDepthEstimator } from './depth';
 import { capTierForEstimatedDepth } from './tier-cap';
@@ -81,6 +81,7 @@ import { checkObjectGone } from './edit/gone-check';
 import { StaticCameraEraser } from './edit/eraser';
 import { averageFrames } from './edit/average-frames';
 import { pushAppearanceFrame, APPEARANCE_FRAME_COUNT, cameraMovedFromAppearance } from './edit/appearance';
+import { detectVolumeAtPixel } from './surfaces/local-detect';
 import { capTierForSingleViewpoint } from './edit/single-viewpoint-tier';
 
 export interface CameraAppOptions {
@@ -407,7 +408,20 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   };
   // Events over the video / stereo display canvas (under the overlay) count too: synthetic dispatches
   // and any element that ends up above the overlay bubble to the container.
-  const pointer = new PointerInputAdapter({ element: canvas, extraTargets: [container], store, rayFromNdc, depthPick: (x, y) => pickWorld(x, y) });
+  const pointer = new PointerInputAdapter({
+    element: canvas,
+    extraTargets: [container],
+    store,
+    rayFromNdc,
+    depthPick: (x, y) => pickWorld(x, y),
+    onTap: (ndcX, ndcY) => {
+      // A click on empty space (no object under the pointer) runs click-to-detect there.
+      const ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
+      rayFromNdc(ndcX, ndcY, ray);
+      if (raycastProxies(store.current, ray.origin, ray.direction, 30, PICK_PAD_M).length > 0) return;
+      void discoverAt(ndcX, ndcY);
+    },
+  });
   pointer.pickPadM = PICK_PAD_M;
 
   const physics = createProxyPhysics();
@@ -934,7 +948,49 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
    * registered keep their state.
    */
   async function runCandidateDiscovery(): Promise<string[]> {
-    const candidates = capture.discover([...surfaceEstimator.volumes], store.current);
+    return registerVolumes([...surfaceEstimator.volumes]);
+  }
+
+  let tapDetectCounter = 0;
+  /**
+   * Click-to-detect: segment whatever stands above the support surface at the clicked pixel
+   * (surfaces/local-detect.ts) and register it like a discovered object, selected.
+   */
+  async function discoverAt(ndcX: number, ndcY: number): Promise<string | null> {
+    const map = depthEstimator.latest;
+    if (!map || performance.now() - map.timestamp > 3000) return null;
+    const { u, v } = ndcToVideoUv(ndcX, ndcY);
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    const px = Math.min(map.width - 1, Math.floor(u * map.width));
+    const py = Math.min(map.height - 1, Math.floor(v * map.height));
+    const volume = detectVolumeAtPixel(map, px, py, surfaceEstimator.lastFrame, Object.values(store.current.surfaces), {
+      id: `camera-tap-${tapDetectCounter++}`,
+      maxSideM: tuning.value.volumeMaxSideM,
+    });
+    if (!volume) {
+      setTransientHint('Nothing standing above the surface there. Click on the object itself.');
+      return null;
+    }
+    // An existing object overlapping the new volume is the same thing: select it instead.
+    for (const o of Object.values(store.current.objects)) {
+      if (o.origin !== 'physical') continue;
+      const d = o.currentPose.position;
+      if (Math.abs(d.x - volume.pose.position.x) < 0.1 && Math.abs(d.z - volume.pose.position.z) < 0.1 && Math.abs(d.y - volume.pose.position.y) < 0.2) {
+        interaction.select(o.id);
+        return o.id;
+      }
+    }
+    const ids = await registerVolumes([volume]);
+    const id = ids[0] ?? null;
+    if (id) {
+      interaction.select(id);
+      setTransientHint(`Detected ${store.current.objects[id]?.userName ?? 'object'} at the click: drag to move it.`);
+    }
+    return id;
+  }
+
+  async function registerVolumes(volumes: DetectedVolume[]): Promise<string[]> {
+    const candidates = capture.discover(volumes, store.current);
     const ids: string[] = [];
     for (const candidate of candidates) {
       if (store.current.objects[candidate.object.id]) {

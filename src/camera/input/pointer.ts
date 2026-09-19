@@ -64,7 +64,17 @@ export interface PointerInputOptions {
   defaultDepthM?: number;
   /** Metres of lift per wheel notch (100 delta units). */
   wheelLiftPerNotchM?: number;
+  /**
+   * A primary-pointer press released within `TAP_MAX_NDC` / `TAP_MAX_MS` of where it started
+   * (a click, not a drag), reported after the release edge was queued. The app decides what
+   * a tap on empty space means (click-to-detect a real object).
+   */
+  onTap?: (ndcX: number, ndcY: number) => void;
 }
+
+/** A press that ends this close (NDC) and this soon after it began is a tap. */
+const TAP_MAX_NDC = 0.03;
+const TAP_MAX_MS = 700;
 
 /** The controller hovers within 3 m of the ray origin; keep the origin well inside that. */
 const REACH_M = 1.0;
@@ -122,10 +132,14 @@ interface PointerTrack {
   touch: boolean;
   /** True once the track saw its 'up' and has no more queued events. */
   finished: boolean;
+  /** Where/when the press began (tap detection). */
+  downNdcX: number;
+  downNdcY: number;
+  downAt: number;
 }
 
 function makeTrack(pointerId: number, touch: boolean): PointerTrack {
-  return { pointerId, ndcX: 0, ndcY: 0, queue: [], down: false, planeY: null, grabDistance: DEFAULT_DEPTH_M, fallbackDepth: DEFAULT_DEPTH_M, lastPoint: null, grabOffsetY: 0, touch, finished: false };
+  return { pointerId, ndcX: 0, ndcY: 0, queue: [], down: false, planeY: null, grabDistance: DEFAULT_DEPTH_M, fallbackDepth: DEFAULT_DEPTH_M, lastPoint: null, grabOffsetY: 0, touch, finished: false, downNdcX: 0, downNdcY: 0, downAt: 0 };
 }
 
 /**
@@ -196,8 +210,11 @@ export class PointerInputAdapter {
   private readonly ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
   private disposed = false;
 
+  private readonly onTap: ((ndcX: number, ndcY: number) => void) | undefined;
+
   constructor(opts: PointerInputOptions) {
     this.element = opts.element;
+    this.onTap = opts.onTap;
     this.extraTargets = (opts.extraTargets ?? []).filter((el) => el !== opts.element);
     this.store = opts.store;
     this.rayFromNdc = opts.rayFromNdc;
@@ -310,6 +327,14 @@ export class PointerInputAdapter {
       }
     }
     track.queue.push({ kind, ndcX, ndcY });
+    if (kind === 'down') {
+      track.downNdcX = ndcX;
+      track.downNdcY = ndcY;
+      track.downAt = performance.now();
+    } else if (kind === 'up' && track === this.tracks[0] && this.onTap) {
+      const moved = Math.hypot(ndcX - track.downNdcX, ndcY - track.downNdcY);
+      if (moved <= TAP_MAX_NDC && performance.now() - track.downAt <= TAP_MAX_MS) this.onTap(ndcX, ndcY);
+    }
   }
 
   private removeTrack(track: PointerTrack): void {

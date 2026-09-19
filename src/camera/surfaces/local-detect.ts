@@ -1,0 +1,155 @@
+/**
+ * Click-to-detect: a local object segmentation around one depth pixel.
+ *
+ * Automatic discovery clusters everything above every plane at once and drops
+ * small, thin or crowded blobs by design. When the user clicks something the
+ * automatic pass missed, this grows a region from the clicked pixel over the
+ * depth map (4-connected flood fill with a depth-continuity test) keeping only
+ * points that stand above the support surface under the click, and returns it
+ * as a `DetectedVolume` for the normal discovery/approval path.
+ */
+import type { Surface, Vec3 } from '@/core/types';
+import { IDENTITY_QUAT } from '@/core/types';
+import type { DetectedVolume } from '@/capture/contract';
+import type { DepthMap } from '../contract';
+import { pickFromMap, pickFromMapRobust, type WorldFrame } from '../pick';
+
+export interface LocalDetectOptions {
+  /** Points closer to the support top than this are the support itself. Default 0.015 m. */
+  minAboveSupportM?: number;
+  /** Horizontal search radius around the clicked point. Default 0.35 m. */
+  radiusM?: number;
+  /** Largest side accepted (bigger = a wall/person, not a desk object). Default 1.2 m. */
+  maxSideM?: number;
+  /** Fewest pixels for a volume. Default 12. */
+  minCount?: number;
+  /** Depth continuity between 4-neighbours: max(absM, relative * depth). Defaults 0.03 m / 0.04. */
+  depthStepAbsM?: number;
+  depthStepRel?: number;
+  /** Id for the resulting volume. */
+  id?: string;
+}
+
+/** Top of the highest horizontal surface at or just below `p` whose footprint (padded) contains it; else 0 (the ground). */
+export function supportTopAt(surfaces: readonly Surface[], p: Vec3, padM = 0.2): { y: number; surface: Surface | null } {
+  let best: Surface | null = null;
+  let bestY = -Infinity;
+  for (const s of surfaces) {
+    if (s.orientation !== 'horizontal') continue;
+    const top = s.aabb.max.y;
+    if (top > p.y + 0.05) continue;
+    const m = s.label === 'floor' ? Infinity : padM;
+    if (p.x < s.aabb.min.x - m || p.x > s.aabb.max.x + m || p.z < s.aabb.min.z - m || p.z > s.aabb.max.z + m) continue;
+    if (top > bestY) {
+      bestY = top;
+      best = s;
+    }
+  }
+  return best ? { y: bestY, surface: best } : { y: 0, surface: null };
+}
+
+/**
+ * Grow an object volume from depth pixel (px, py). Null when the pixel has no
+ * depth, lies on the support surface itself, or the region is too small/large.
+ */
+export function detectVolumeAtPixel(
+  map: DepthMap,
+  px: number,
+  py: number,
+  frame: WorldFrame | null,
+  surfaces: readonly Surface[],
+  opts: LocalDetectOptions = {},
+): DetectedVolume | null {
+  const minAbove = opts.minAboveSupportM ?? 0.015;
+  const radius = opts.radiusM ?? 0.35;
+  const maxSide = opts.maxSideM ?? 1.2;
+  const minCount = opts.minCount ?? 12;
+  const stepAbs = opts.depthStepAbsM ?? 0.03;
+  const stepRel = opts.depthStepRel ?? 0.04;
+
+  const seed = pickFromMapRobust(map, px, py, frame);
+  if (!seed) return null;
+  const support = supportTopAt(surfaces, seed);
+  // Clicked the desk/floor itself: look for something standing just above it around the click.
+  let sx = Math.floor(px);
+  let sy = Math.floor(py);
+  if (seed.y - support.y < minAbove) {
+    let found = false;
+    outer: for (let r = 1; r <= 6 && !found; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const p = pickFromMap(map, px + dx, py + dy, frame);
+          if (p && p.y - support.y >= minAbove && Math.hypot(p.x - seed.x, p.z - seed.z) <= radius) {
+            sx = Math.floor(px + dx);
+            sy = Math.floor(py + dy);
+            found = true;
+            break outer;
+          }
+        }
+      }
+    }
+    if (!found) return null;
+  }
+
+  const { width, height, metric } = map;
+  const visited = new Uint8Array(width * height);
+  const stack: number[] = [sy * width + sx];
+  visited[sy * width + sx] = 1;
+  let count = 0;
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  const maxVisits = 80_000;
+  let visits = 0;
+  while (stack.length > 0 && visits < maxVisits) {
+    const i = stack.pop()!;
+    visits += 1;
+    const d = metric[i] as number;
+    if (!(d > 0)) continue;
+    const x = i % width;
+    const y = (i - x) / width;
+    const p = pickFromMap(map, x, y, frame);
+    if (!p) continue;
+    if (p.y - support.y < minAbove) continue;
+    if (p.y - support.y > maxSide) continue;
+    if (Math.hypot(p.x - seed.x, p.z - seed.z) > radius) continue;
+    count += 1;
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+    const tol = Math.max(stepAbs, stepRel * d);
+    const push = (j: number): void => {
+      if (visited[j]) return;
+      visited[j] = 1;
+      const dj = metric[j] as number;
+      if (!(dj > 0) || Math.abs(dj - d) > tol) return;
+      stack.push(j);
+    };
+    if (x > 0) push(i - 1);
+    if (x < width - 1) push(i + 1);
+    if (y > 0) push(i - width);
+    if (y < height - 1) push(i + width);
+  }
+  if (count < minCount) return null;
+  // The object stands on its support: extend the box down to the support top.
+  minY = Math.min(minY, support.y);
+  const dx = maxX - minX;
+  const dy = maxY - minY;
+  const dz = maxZ - minZ;
+  if (dx > maxSide || dy > maxSide || dz > maxSide) return null;
+  // Depth from a single viewpoint sees only the near face: give a flat box a plausible depth.
+  const minHalf = 0.015;
+  return {
+    id: opts.id ?? 'camera-tap',
+    label: 'other',
+    pose: { position: { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2 }, rotation: { ...IDENTITY_QUAT } },
+    halfExtents: { x: Math.max(minHalf, dx / 2), y: Math.max(minHalf, dy / 2), z: Math.max(minHalf, dz / 2) },
+  };
+}
