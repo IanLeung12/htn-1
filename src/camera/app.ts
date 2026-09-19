@@ -911,8 +911,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
         ids.push(candidate.object.id);
         continue;
       }
+      // A discovered real object is physically resting where the camera sees it: it must not
+      // be dropped by the proxy physics when its support plane flickers in the surface registry
+      // (the desk objects fell 0.7 m to the floor on the ZED). Kinematic until the user moves it;
+      // a drag keeps it on its support plane (input/pointer.ts), so no settle is needed.
+      const object: EditableObject = { ...candidate.object, physical: { ...candidate.object.physical, kinematic: true } };
       const result = store.dispatch(
-        { intent: { kind: 'registerObject', object: candidate.object }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+        { intent: { kind: 'registerObject', object }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
         conditions(),
       );
       if (!result.ok) continue;
