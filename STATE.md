@@ -112,6 +112,22 @@ Last updated: 2026-09-19 (session 1, feature pass 5)
   viewpoints; the fix is reprojecting the frame's RGB-D as a depth mesh clipped to the object's
   silhouette (stencil), which is what the capture doc predicted.
 
+## Live-browser findings (2026-09-19, real GPU, DevUI simulator)
+
+- three.js draws the WebXR depth-sensing occlusion mesh with group order -Infinity, before
+  everything and regardless of renderOrder. Its real-scene depth blocked every hull, plate, and
+  appearance fragment, so deletes were invisible whenever depth sensing was active (a real Quest,
+  or Chrome with a GPU). Headless SwiftShader has no GPU depth path, which is why e2e passed.
+  Fix: a colourless depth-reset box (depth forced to far) inside the object silhouette at
+  renderOrder 0.5, then captured content at 1, objects at 2. Limitation: a hand inside that
+  silhouette is not depth-occluded until the captured-content shader samples the depth texture.
+- Stencil clipping is unreliable across XR framebuffers; silhouette clipping now happens in the
+  fragment shader with the app head pose as the eye.
+- With the DevUI installed the emulator is in manual control mode (scripted head moves are
+  ignored) and renders stereo over a mono passthrough image; use programmatic control and
+  stereoEnabled=false for scripted demos.
+- The shell tile for a hidden object was never skipped (surface id vs object id mismatch).
+
 ## Suggested next steps
 
 1. Device validation on a Quest 3: feature report, depth texture format, hand confidence, anchor
