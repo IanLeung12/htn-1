@@ -25,8 +25,12 @@ export interface ZedSdkPoseSourceOptions {
   staleMs?: number;
 }
 
-/** A tracking origin within this distance of the first pose's y means the SDK did not put the origin on the floor. */
-const FLOOR_ORIGIN_MIN_HEIGHT_M = 0.1;
+/**
+ * A first tracked pose lower than this above the reported floor means the SDK did not really
+ * find the floor (it falls back to the camera as origin, or fits a 'floor' on a nearby object
+ * when the camera stares at one from 0.3 m); the tuning height is used instead.
+ */
+const FLOOR_ORIGIN_MIN_HEIGHT_M = 0.3;
 
 export class ZedSdkPoseSource implements PoseSource {
   pose: Pose = { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } };

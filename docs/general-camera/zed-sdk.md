@@ -106,13 +106,21 @@ Text commands from the page: `{"cmd":"reset"}`, `{"cmd":"config","jpegWidth":128
 - Bridge send -> Python client receive: 2.7 ms average. Browser decode (JPEG ->
   ImageBitmap + two inflates via `DecompressionStream`) is reported live in the diagnostics
   line (`decode N ms`); with the fake source the e2e spec sees > 10 fps under SwiftShader.
-- NEURAL: not measured yet (engine build in progress at the time of writing); the bridge
-  falls back to ULTRA / PERFORMANCE automatically when a mode fails to open.
+- NEURAL (engine built offline in 9 min by `optimize_models.py`): 21 fps GPU-bound, encode
+  8 ms, ~93 kB/frame, 2.0 MB/s; send -> receive rose to ~40 ms average while the GPU was
+  saturated. ULTRA is the better default on this laptop when the browser also needs the GPU;
+  the bridge falls back ULTRA -> PERFORMANCE automatically when a mode fails to open.
+- Floor origin caveat: with the camera 0.36 m from a desk object, `set_floor_as_origin`
+  produced camera heights of 2.97 m (ULTRA run) and 0.16 m (NEURAL run) - the SDK fitted a
+  'floor' on whatever dominated the view. `ZedSdkPoseSource` treats a first pose under 0.3 m
+  as "no floor" and uses the tuning height; point the camera at real floor when starting the
+  bridge, or send `{"cmd":"reset"}` (`window.__zedBridge.poseSource.reset()`) once it does.
 
 ## Remaining
 
-- Measure NEURAL fps once the engine is built and record browser-side decode latency on the
-  real GPU (the numbers above are ULTRA + a Python client).
+- Record browser-side decode latency on the real GPU (the numbers above are from a Python
+  client; the page shows its own in the diagnostics line) and validate the floor origin with
+  the camera looking at real floor.
 - Optional spatial-mapping mesh (`enable_spatial_mapping`) is not streamed yet.
 - Landing-card checkbox reloads the page; a hot switch between UVC and bridge sources would
   need the app to rebuild its sources.
