@@ -1,0 +1,192 @@
+/**
+ * Static-camera fast path for hiding a physical object (general-camera
+ * backend). `BackgroundHull` (src/render/background-hull.ts) reprojects the
+ * clean-plate frames as a parallax-correct 3D depth mesh so it stays correct
+ * from any head position - necessary on a moving camera, but needless work
+ * when the camera hasn't moved: with a STATIC camera, "what's behind the
+ * object" is exactly the clean-plate frame's own pixels, at the exact same
+ * screen position the object's silhouette occupies. `StaticCameraEraser`
+ * exploits that: a camera-facing quad, cut out by the object's tracked
+ * silhouette mask (`./silhouette.ts`) and textured directly from the
+ * clean-plate frame via `./mask-cutout.ts` - no depth-mesh reprojection,
+ * exact per-pixel match. It is a WORLD-SPACE quad added to the main scene
+ * (same pattern as `../impostor.ts`'s `ImpostorViews`), not a hand-rolled
+ * screen-space overlay: the ordinary perspective camera (whose fov/aspect
+ * the app keeps in sync with the video's `object-fit: cover` crop, see
+ * `src/camera/app.ts`) then places it exactly where it renders, the same
+ * way it places every other object - a separate NDC projection would have
+ * to reproduce that crop math and drift out of sync with it.
+ *
+ * Used only while camera motion is below ~1 px (see `CameraAppOptions`'
+ * wiring in src/camera/app.ts, which measures it); `BackgroundHull` remains
+ * the fallback for everything else (camera moved, no plate frame yet, no
+ * tracked mask yet).
+ */
+import * as THREE from 'three';
+import type { FrameStore } from '@/capture/frame-store';
+import type { EditableObject, SceneSnapshot } from '@/core/types';
+import type { SilhouetteMask } from './silhouette';
+import { cutoutFromMask } from './mask-cutout';
+
+/** Below this camera motion (px, same metric the caller's optical-flow/pose delta uses), the fast path is used. */
+export const STATIC_CAMERA_MOTION_PX = 1;
+
+function shouldHide(obj: EditableObject): boolean {
+  if (obj.origin !== 'physical') return false;
+  if (!obj.visible) return true;
+  const a = obj.originalPose.position;
+  const b = obj.currentPose.position;
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) > 0.005;
+}
+
+interface EraserEntry {
+  mesh: THREE.Mesh;
+  material: THREE.MeshBasicMaterial;
+  texture: THREE.DataTexture;
+  builtKey: string | undefined;
+  active: boolean;
+}
+
+/**
+ * Renders, for each hidden/moved physical object whose tracked silhouette
+ * mask and a clean-plate frame both exist, a camera-facing world-space quad
+ * that composites the plate frame's own pixels exactly where the object's
+ * silhouette is.
+ */
+export class StaticCameraEraser {
+  readonly group = new THREE.Group();
+  private readonly entries = new Map<string, EraserEntry>();
+  private activeIds = new Set<string>();
+
+  constructor(private readonly frameStore: FrameStore) {}
+
+  /**
+   * `masks` maps objectId -> its tracked silhouette mask (in the depth
+   * frame's pixel grid, `depthGridWidth x depthGridHeight`). `motionPx` is
+   * the caller's current camera-motion estimate; above
+   * `STATIC_CAMERA_MOTION_PX` every entry is hidden (falls back to the 3D
+   * hull). Returns the number of objects actively composited this frame.
+   */
+  update(
+    snapshot: SceneSnapshot,
+    masks: ReadonlyMap<string, SilhouetteMask>,
+    motionPx: number,
+    depthGridWidth: number,
+    depthGridHeight: number,
+    camera: THREE.Camera,
+  ): number {
+    this.activeIds = new Set();
+    if (!(motionPx < STATIC_CAMERA_MOTION_PX) || depthGridWidth <= 0 || depthGridHeight <= 0) {
+      for (const entry of this.entries.values()) entry.mesh.visible = false;
+      return 0;
+    }
+
+    for (const obj of Object.values(snapshot.objects)) {
+      if (!shouldHide(obj)) continue;
+      const mask = masks.get(obj.id);
+      if (!mask) continue;
+      const frames = this.frameStore.get(obj.id);
+      const plateFrame = frames && frames.length > 0 ? frames[0] : undefined;
+      if (!plateFrame) continue;
+
+      const key = `${plateFrame.timestamp}:${mask.x0}:${mask.y0}:${mask.width}:${mask.height}`;
+      let entry = this.entries.get(obj.id);
+      if (!entry) {
+        entry = this.buildEntry();
+        this.entries.set(obj.id, entry);
+        this.group.add(entry.mesh);
+      }
+
+      if (entry.builtKey !== key) {
+        const cutout = cutoutFromMask(plateFrame, obj, mask, depthGridWidth, depthGridHeight);
+        entry.builtKey = key;
+        if (!cutout) {
+          entry.active = false;
+          entry.mesh.visible = false;
+          continue;
+        }
+        this.applyCutout(entry, cutout);
+      }
+      if (!entry.active) continue;
+
+      // Camera-facing (yaw-only) billboard, same convention as the impostor: a static
+      // camera's plate frame is a rectified view from exactly this pose, so orienting
+      // toward wherever "camera" currently is keeps it aligned (identical to the capture
+      // pose when the camera truly hasn't moved, which is the only time this path runs).
+      const camPos = camera.position;
+      const yaw = Math.atan2(camPos.x - entry.mesh.position.x, camPos.z - entry.mesh.position.z);
+      entry.mesh.rotation.set(0, yaw, 0);
+      entry.mesh.visible = true;
+      this.activeIds.add(obj.id);
+    }
+
+    for (const [id, entry] of this.entries) {
+      if (!this.activeIds.has(id)) entry.mesh.visible = false;
+    }
+    return this.activeIds.size;
+  }
+
+  /** True when a visible composited quad exists for `objectId` this frame. */
+  isActive(objectId: string): boolean {
+    return this.activeIds.has(objectId);
+  }
+
+  /** Number of objects currently composited via the fast path. */
+  get activeCount(): number {
+    return this.activeIds.size;
+  }
+
+  private buildEntry(): EraserEntry {
+    const texture = new THREE.DataTexture(new Uint8ClampedArray(4), 1, 1, THREE.RGBAFormat);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.flipY = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+
+    const material = new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      alphaTest: 0.5,
+      side: THREE.DoubleSide,
+      depthTest: true,
+      depthWrite: true,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+    mesh.renderOrder = 2;
+    mesh.visible = false;
+
+    return { mesh, material, texture, builtKey: undefined, active: false };
+  }
+
+  private applyCutout(entry: EraserEntry, cutout: { width: number; height: number; rgba: Uint8ClampedArray; widthM: number; heightM: number; center: { x: number; y: number; z: number } }): void {
+    entry.texture.dispose();
+    const texture = new THREE.DataTexture(cutout.rgba, cutout.width, cutout.height, THREE.RGBAFormat);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.flipY = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    entry.texture = texture;
+    entry.material.map = texture;
+    entry.material.needsUpdate = true;
+
+    entry.mesh.geometry.dispose();
+    entry.mesh.geometry = new THREE.PlaneGeometry(cutout.widthM, cutout.heightM);
+    entry.mesh.position.set(cutout.center.x, cutout.center.y, cutout.center.z);
+    entry.active = true;
+  }
+
+  dispose(): void {
+    for (const entry of this.entries.values()) {
+      entry.mesh.geometry.dispose();
+      entry.material.dispose();
+      entry.texture.dispose();
+      this.group.remove(entry.mesh);
+    }
+    this.entries.clear();
+    this.activeIds.clear();
+  }
+}

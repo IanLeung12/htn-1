@@ -265,11 +265,32 @@ export function parseCommand(text: string, snapshot: SceneSnapshot, context: Voi
     return { kind: 'delete', objectId: target.id, label: target.userName };
   }
 
+  // "put it back" names no object (pronoun, not a label) - it means "restore
+  // whatever is currently selected", which the generic "restore X" pattern
+  // below cannot express (it would try, and fail, to resolve "it back" as a
+  // name). Checked first so it takes priority.
+  if (/^put it back$/.test(norm)) {
+    const target = context.selectedId ? snapshot.objects[context.selectedId] : undefined;
+    if (!target) return null;
+    return { kind: 'restore', objectId: target.id, label: target.userName };
+  }
+
   m = norm.match(/^(?:restore|bring back) (?:the )?(.+)$/);
   if (m) {
     const target = resolveTarget(snapshot, m[1] ?? '', context, true);
     if (!target) return null;
     return { kind: 'restore', objectId: target.id, label: target.userName };
+  }
+
+  // "capture the plate" (general-camera backend: docs/general-camera) names
+  // the ARTIFACT being captured, not the object - "plate" is never an
+  // object's label/userName, so this must resolve against the current
+  // selection rather than falling into the generic "capture X" name lookup
+  // below (which would just fail to find an object named "plate").
+  if (/^capture(?: the)? plate$/.test(norm)) {
+    const target = context.selectedId ? snapshot.objects[context.selectedId] : undefined;
+    if (!target) return null;
+    return { kind: 'captureCleanPlate', objectId: target.id, label: target.userName };
   }
 
   m = norm.match(/^capture (?:the )?(.+)$/);
