@@ -242,6 +242,8 @@ export type Intent =
   | { kind: 'setRegionState'; regionId: string; state: RegionState; reason: FallbackReason }
   | { kind: 'registerSurface'; surface: Surface }
   | { kind: 'removeSurface'; surfaceId: string }
+  | { kind: 'registerRegion'; region: Region }
+  | { kind: 'removeRegion'; regionId: string }
   | { kind: 'registerObject'; object: EditableObject }
   | { kind: 'updateBackground'; objectId: string; plate: BackgroundPlate }
   | { kind: 'setTier'; objectId: string; tier: EditTier; confidence: number }

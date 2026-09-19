@@ -267,4 +267,50 @@ describe('resolver', () => {
     const redo = resolver.resolve(snapshot, env({ kind: 'redo' }), makeConditions());
     expect(redo.ok).toBe(false);
   });
+
+  it('registerRegion adds a region to the snapshot, keyed by id; replaces on re-register', () => {
+    const resolver = createResolver();
+    const snapshot = makeSnapshot();
+    const region = {
+      id: 'region:plane-0',
+      bounds: { min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 1, z: 1 } },
+      state: 'LIVE' as const,
+      reason: 'none' as const,
+      surfaces: ['plane-0'],
+      objects: [],
+      since: 0,
+    };
+    const result = resolver.resolve(snapshot, env({ kind: 'registerRegion', region }, 0, 'system'), makeConditions());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.regions['region:plane-0']).toEqual(region);
+
+    const replacement = { ...region, state: 'CAPTURED' as const };
+    const result2 = resolver.resolve(result.snapshot, env({ kind: 'registerRegion', region: replacement }, 0, 'system'), makeConditions());
+    expect(result2.ok).toBe(true);
+    if (!result2.ok) return;
+    expect(result2.snapshot.regions['region:plane-0']?.state).toBe('CAPTURED');
+    expect(Object.keys(result2.snapshot.regions)).toHaveLength(1);
+  });
+
+  it('removeRegion deletes a region from the snapshot; no-op if it never existed', () => {
+    const resolver = createResolver();
+    const region = {
+      id: 'region:plane-0',
+      bounds: { min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 1, z: 1 } },
+      state: 'LIVE' as const,
+      reason: 'none' as const,
+      surfaces: ['plane-0'],
+      objects: [],
+      since: 0,
+    };
+    const snapshot = makeSnapshot({ regions: { [region.id]: region } });
+    const result = resolver.resolve(snapshot, env({ kind: 'removeRegion', regionId: region.id }, 0, 'system'), makeConditions());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.regions[region.id]).toBeUndefined();
+
+    const result2 = resolver.resolve(result.snapshot, env({ kind: 'removeRegion', regionId: 'nope' }, 0, 'system'), makeConditions());
+    expect(result2.ok).toBe(true);
+  });
 });

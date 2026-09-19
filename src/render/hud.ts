@@ -6,6 +6,7 @@
  */
 import * as THREE from 'three';
 import type { QualityDecision, QualityTier, VisualMode } from '@/core/types';
+import type { CaptureGuide } from '@/app/contract';
 
 export interface HudStatus {
   tier: QualityTier;
@@ -14,6 +15,7 @@ export interface HudStatus {
   mode: VisualMode;
   selectedObjectId: string | null;
   lastRejection: { reason: string; explanation: string; at: number } | null;
+  guide?: CaptureGuide;
 }
 
 export interface HudButtons {
@@ -84,6 +86,10 @@ export class InXRHud {
     if (showRejection && status.lastRejection) {
       ctx.fillStyle = '#ff6666';
       line(`✗ ${status.lastRejection.reason}: ${status.lastRejection.explanation}`);
+    }
+    if (status.guide?.active) {
+      ctx.fillStyle = '#66ffcc';
+      line(status.guide.hint);
     }
     this.texture.needsUpdate = true;
   }
@@ -156,10 +162,71 @@ export class DomHud {
     if (showRejection && status.lastRejection) {
       lines.push(`rejected: ${status.lastRejection.reason} — ${status.lastRejection.explanation}`);
     }
+    if (status.guide?.active) {
+      lines.push(`guide: ${status.guide.hint}`);
+    }
     this.statusEl.textContent = lines.join('\n');
   }
 
   dispose(): void {
     this.root.remove();
+  }
+}
+
+/**
+ * 3D floor marker for the guided capture flow: a ring at the target
+ * viewpoint's XZ (on the floor) plus a small arrow at head height pointing
+ * the way the target viewpoint looks, so a user in the headset can see where
+ * to stand and which way to face. Text hint is rendered by InXRHud/DomHud
+ * above (see HudStatus.guide).
+ */
+export class GuideOverlay {
+  readonly group = new THREE.Group();
+  private readonly ring: THREE.Mesh;
+  private readonly arrow: THREE.Mesh;
+
+  constructor() {
+    const ringGeometry = new THREE.RingGeometry(0.16, 0.22, 32);
+    ringGeometry.rotateX(-Math.PI / 2);
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      color: 0x33ffaa,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+    });
+    this.ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    this.ring.renderOrder = 999;
+
+    const arrowGeometry = new THREE.ConeGeometry(0.05, 0.14, 8);
+    const arrowMaterial = new THREE.MeshBasicMaterial({ color: 0x33ffaa, depthWrite: false });
+    this.arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
+    this.arrow.renderOrder = 999;
+
+    this.group.add(this.ring, this.arrow);
+    this.group.visible = false;
+  }
+
+  update(guide: CaptureGuide | undefined, floorY: number): void {
+    if (!guide?.active || !guide.targetPose) {
+      this.group.visible = false;
+      return;
+    }
+    this.group.visible = true;
+    const { position, rotation } = guide.targetPose;
+    this.ring.position.set(position.x, floorY + 0.01, position.z);
+    this.arrow.position.set(position.x, floorY + 0.3, position.z);
+    this.arrow.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+    // Cone points +Y by default; rotate so its tip points along local -Z
+    // (the guide pose's forward/look direction).
+    this.arrow.rotateX(Math.PI / 2);
+  }
+
+  dispose(): void {
+    this.group.clear();
+    (this.ring.material as THREE.Material).dispose();
+    (this.arrow.material as THREE.Material).dispose();
+    this.ring.geometry.dispose();
+    this.arrow.geometry.dispose();
   }
 }

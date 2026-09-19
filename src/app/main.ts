@@ -17,9 +17,9 @@ import {
   restore,
   nearestObjects,
 } from '@/core';
-import type { EditableObject, FrameSample, Pose, QualityDecision, RuntimeConditions, VisualMode } from '@/core/types';
+import type { EditableObject, FrameSample, Pose, QualityDecision, RuntimeConditions, Vec3, VisualMode } from '@/core/types';
 import { IDENTITY_QUAT } from '@/core/types';
-import type { AppHandle, AppOptions, StartApp, XRFeatureReport } from './contract';
+import type { AppHandle, AppOptions, CaptureGuide, StartApp, XRFeatureReport } from './contract';
 import { requestARSession, endARSession } from '@/xr/session';
 import { XRInput } from '@/xr/input';
 import { SceneUnderstanding } from '@/xr/scene-understanding';
@@ -28,8 +28,10 @@ import { createRenderer } from '@/render/renderer';
 import { ObjectViews } from '@/render/objects';
 import { PlateRenderer } from '@/render/plates';
 import { ShellRenderer } from '@/render/shell';
-import { InXRHud, DomHud } from '@/render/hud';
+import { InXRHud, DomHud, GuideOverlay } from '@/render/hud';
 import { InteractionController } from './interaction';
+import { RegionManager } from './regions';
+import { INACTIVE_GUIDE, makeActiveGuide, planCaptureViewpoints, wrapSourceForGuide } from './guide';
 import { createCapturePipeline } from '@/capture';
 import { createPlateTextureRegistry } from '@/capture';
 import type { CameraFrameSource } from '@/capture/contract';
@@ -62,6 +64,11 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
   const quality = createQualityManager();
   const freshness = createFreshnessBus();
   const regionMachine = createRegionStateMachine();
+  const regionManager = new RegionManager({ store, regionMachine });
+  store.subscribe((_snapshot, applied) => {
+    if (!applied) return;
+    regionManager.onCommit(applied, conditions());
+  });
 
   if (options.persistKey) {
     const adapter = createLocalStorageAdapter('reality-editor');
@@ -117,6 +124,10 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
 
   const inXRHud = new InXRHud();
   scene.add(inXRHud.panel);
+  const guideOverlay = new GuideOverlay();
+  scene.add(guideOverlay.group);
+
+  let guide: CaptureGuide = INACTIVE_GUIDE;
 
   let features: XRFeatureReport | null = null;
   let inSession = false;
@@ -247,21 +258,37 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
 
     const supportSurface = obj.supportSurfaces[0] ? snapshot.surfaces[obj.supportSurfaces[0]] : undefined;
     const source = window.__cameraFrameSource ?? NO_CAMERA_SOURCE;
-    const viewpoints: Pose[] = [poseFromMatrix(camera)];
+    const plan = planCaptureViewpoints(obj, supportSurface, poseFromMatrix(camera));
 
-    const acquireResult = await capture.acquireCleanPlate({ object: obj, supportSurface, viewpoints }, source);
-    const verified = await capture.verify(acquireResult, viewpoints, source);
+    let step = 0;
+    guide = makeActiveGuide(obj, 1, plan.capture.length, plan.capture[0] ?? poseFromMatrix(camera));
+    const guidedSource = wrapSourceForGuide(source, (viewpoint) => {
+      step += 1;
+      // Only the primary guided arc advances the visible step count; the
+      // off-path verification pass (also routed through this source) does not.
+      if (step <= plan.capture.length) {
+        const target = plan.capture[Math.min(step - 1, plan.capture.length - 1)] ?? viewpoint ?? poseFromMatrix(camera);
+        guide = makeActiveGuide(obj, step, plan.capture.length, target);
+      }
+    });
 
-    store.dispatch(
-      { intent: { kind: 'updateBackground', objectId, plate: acquireResult.plate }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
-      conditions(),
-    );
-    store.dispatch(
-      { intent: { kind: 'setTier', objectId, tier: verified.tier, confidence: verified.tierConfidence }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
-      conditions(),
-    );
+    try {
+      const acquireResult = await capture.acquireCleanPlate({ object: obj, supportSurface, viewpoints: plan.capture }, guidedSource);
+      const verified = await capture.verify(acquireResult, plan.verify, guidedSource);
 
-    return { tier: verified.tier, coverage: acquireResult.plate.coverage };
+      store.dispatch(
+        { intent: { kind: 'updateBackground', objectId, plate: acquireResult.plate }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+        conditions(),
+      );
+      store.dispatch(
+        { intent: { kind: 'setTier', objectId, tier: verified.tier, confidence: verified.tierConfidence }, source: 'system', issuedAt: performance.now(), basedOnVersion: store.current.version },
+        conditions(),
+      );
+
+      return { tier: verified.tier, coverage: acquireResult.plate.coverage };
+    } finally {
+      guide = INACTIVE_GUIDE;
+    }
   }
 
   // ---- Frame loop -----------------------------------------------------
@@ -291,10 +318,21 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     views.selectedId = interaction.selectedId;
     views.grabbedId = interaction.selectedId;
 
+    const obstructionPoints: Vec3[] = [cond.headPose.position];
+    if (input.state.left.active) {
+      obstructionPoints.push({ x: input.state.left.position.x, y: input.state.left.position.y, z: input.state.left.position.z });
+    }
+    if (input.state.right.active) {
+      obstructionPoints.push({ x: input.state.right.position.x, y: input.state.right.position.y, z: input.state.right.position.z });
+    }
+    regionManager.tick(cond, snapshot.mode, quality.decision, obstructionPoints);
+
     views.update(store.current);
     views.updatePreview(store.current, previewGroup);
     plates.update(store.current, cond.headPose);
     shell.update(store.current, sceneUnderstanding.latestGlobalMeshes);
+    // Floor is at y=0 in local-floor space (see docs/testing.md's IWER coordinate-frame note).
+    guideOverlay.update(guide, 0);
 
     // Rendering order (see xr/depth.ts): shell first (already added to scene
     // before objects), depth occlusion mesh second, editable objects last.
@@ -315,6 +353,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
         mode: snapshot.mode,
         selectedObjectId: interaction.selectedId,
         lastRejection: interaction.lastRejection,
+        guide,
       },
       now,
     );
@@ -326,6 +365,7 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
         mode: snapshot.mode,
         selectedObjectId: interaction.selectedId,
         lastRejection: interaction.lastRejection,
+        guide,
       },
       quality.decision,
       now,
@@ -383,6 +423,12 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
     release(hand: 'left' | 'right'): void {
       interaction.release(hand, conditions());
     },
+    reportObstruction(point: Vec3): void {
+      regionManager.reportObstructionAt(point, conditions());
+    },
+    get guide(): CaptureGuide {
+      return guide;
+    },
     dispose(): void {
       void exitAR();
       disposeRenderer();
@@ -393,11 +439,11 @@ export const startApp: StartApp = async (options: AppOptions = {}): Promise<AppH
       sceneUnderstanding.dispose();
       inXRHud.dispose();
       domHud.dispose();
+      guideOverlay.dispose();
     },
   };
 
   window.__realityEditor = handle;
-  void regionMachine;
   void nearestObjects;
   return handle;
 };

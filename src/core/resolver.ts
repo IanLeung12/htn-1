@@ -332,6 +332,23 @@ export function createResolver(opts?: ResolverOptions): TransactionResolver {
         delete surfaces[intent.surfaceId];
         return { ok: true, snapshot: { ...snapshot, surfaces, version, committedAt }, applied: intent };
       }
+      case 'registerRegion': {
+        return {
+          ok: true,
+          snapshot: {
+            ...snapshot,
+            regions: { ...snapshot.regions, [intent.region.id]: intent.region },
+            version,
+            committedAt,
+          },
+          applied: intent,
+        };
+      }
+      case 'removeRegion': {
+        const regions = { ...snapshot.regions };
+        delete regions[intent.regionId];
+        return { ok: true, snapshot: { ...snapshot, regions, version, committedAt }, applied: intent };
+      }
       case 'registerObject': {
         const obj: EditableObject = { ...intent.object, approved: intent.object.approved ?? false };
         return {

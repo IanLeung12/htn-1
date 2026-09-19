@@ -32,9 +32,9 @@ Last updated: 2026-09-19 (session 1, integration pass)
 | Renderer (passthrough, shell, objects, depth occlusion) | done (untested on device) |
 | Simulator page (IWER + SEM + devui) | done; lift/return of objects, requested-viewpoint camera source |
 | Capture pipeline (discovery, clean plate, tiers) | done, 18 unit tests; end-to-end tier A in the simulator |
-| E2E tests (Playwright + IWER) | 18 pass, 1 skipped (region wiring) |
-| Region state machine wired into the app | todo |
-| Multi-viewpoint guided capture in the app | todo (pipeline supports it; app passes one viewpoint) |
+| E2E tests (Playwright + IWER) | 18 pass, 0 skipped |
+| Region state machine wired into the app | done (`src/app/regions.ts`; regions created from tracked surfaces, driven every frame, obstruction/fallback tested e2e) |
+| Multi-viewpoint guided capture in the app | done (`src/app/guide.ts`; 4-viewpoint arc + 3 off-path verification, `AppHandle.guide` UI state rendered by the HUD) |
 | Proxy physics (settle, collide) | todo |
 | Device validation on Quest 3 | blocked: no headset |
 
@@ -49,6 +49,36 @@ Last updated: 2026-09-19 (session 1, integration pass)
 | 5 person crossing not hidden | unit: region fallback on dynamic obstruction |
 | 6 static shell depth masking | render: static surfaces excluded from depth occlusion |
 | 8 5-10 objects sustained perf | e2e perf trace p95/p99 (emulated, indicative only) |
+
+## Integration findings (2026-09-19, region wiring + guided capture pass)
+
+- Regions have no creation intent story through `setRegionState` alone (it requires the
+  region to already exist), so `src/core/types.ts`/`src/core/resolver.ts` gained two small
+  additive intents, `registerRegion` (upsert by id) and `removeRegion` - both system-sourced,
+  not undoable, mirroring `registerSurface`/`removeSurface`. `src/app/regions.ts`'s
+  `RegionManager` creates one region per tracked surface (`table`/`desk`/`shelf`/`couch`/
+  `bed`/`storage`/`floor`, or vertical `wall`), id `region:<surfaceId>`, bounds = surface aabb
+  expanded 0.25m (floor: +0.5m up), reactively off `registerSurface`/`removeSurface` commits.
+- Depth-sensing freshness (`DepthOcclusion.state.ageMs`) is `Infinity` whenever the XR session
+  has never reported a depth-sensing texture, which is common under emulation. Feeding that
+  straight into `RegionStateMachine.tick()`'s `depthAgeMs > depthStaleMs` check would force
+  every newly-HYBRID region straight to `FALLBACK`/`depth_stale` before an obstruction hold
+  time ever elapses. `RegionManager` treats a non-finite depth age as "no evidence either way"
+  (0) rather than "maximally stale" - see `RegionManagerOptions.effectiveDepthAgeMs`.
+- `RegionStateMachine.request()`'s legal-transition table has no direct `CAPTURED -> LIVE`
+  edge (only `FALLBACK -> LIVE`), so returning a region to LIVE when the app leaves
+  captured-shell mode goes through a same-frame `FALLBACK` (reason `user`) hop first. The
+  baseline driver in `RegionManager.tickRegion` only auto-recovers its own `user`-reason
+  fallback; every other fallback reason only clears through the state machine's own
+  evidence-driven `tick()` path (e.g. `dynamic_obstruction`'s hold-time expiry ->
+  `TRANSITION` -> `CAPTURED`), so a forced `budget`/`thermal`/etc. fallback is not silently
+  undone by the mode-driven baseline logic.
+- Guided multi-viewpoint capture (`src/app/guide.ts`) plans a 4-viewpoint arc (1.2-1.6m eye
+  height, 1.0-1.4m from the footprint centre, 60 degrees apart, starting at the current head
+  bearing, each looking at the footprint centre) plus 3 off-path verification viewpoints,
+  replacing the single current-head-pose viewpoint `captureCleanPlate` used before. In the
+  simulator this reliably reaches tier A with ~full coverage (was tier A/B, >0.6 coverage
+  with the single-viewpoint version).
 
 ## Integration findings (2026-09-19)
 

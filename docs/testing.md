@@ -87,20 +87,32 @@ the same document.
   `dispatch({ kind: 'approve' }, source: 'test')` transaction.
 - **`gate4-cleanplate-edit.spec.ts`** (Gate D - truthful delete): approve → move the head to
   a good vantage point → `sim.hideVolume(id)` (emulates lifting the physical object away) →
-  `captureCleanPlate` reaches tier A/B with coverage > 0.6 → `sim.showVolume(id)` → delete →
-  restore → undo → redo, all as real resolver transactions. A second test confirms deleting
-  an approved-but-never-captured (tier E) object is rejected (`tier_forbids` -
-  `TIER_CAPABILITIES.E` doesn't include `delete` at all, so the resolver never even reaches
-  the background-coverage check for that case).
+  `captureCleanPlate` reaches tier A with coverage >= 0.95 (guided multi-viewpoint capture,
+  `src/app/guide.ts` - a 4-viewpoint arc around the exposed footprint plus 3 off-path
+  verification viewpoints, replacing the single current-head-pose viewpoint the app used to
+  pass to the capture pipeline) → `sim.showVolume(id)` → delete → restore → undo → redo, all
+  as real resolver transactions. A second test confirms deleting an approved-but-never-captured
+  (tier E) object is rejected (`tier_forbids` - `TIER_CAPABILITIES.E` doesn't include `delete`
+  at all, so the resolver never even reaches the background-coverage check for that case). A
+  third test drives `captureCleanPlate` while sampling `AppHandle.guide` from inside the page
+  (a microtask-based poll, since the simulator's frame captures are async-but-fast enough that
+  a macrotask poll like `setInterval` would never get a turn) and asserts the step count
+  strictly increases through the guided arc and `guide.active` ends `false`.
 - **`gate5-dynamic-reality.spec.ts`**: exercises the quality-manager fallback path end to
   end (feed 12 `trackingOk: false` samples -> tier drops to 0 -> `main.ts`'s
-  `quality.subscribe` handler force-dispatches `setMode('live-overlay')`). The
-  region-obstruction half of this gate (`setRegionState` with `dynamic_obstruction`) is
-  currently a `test.skip` with a message explaining why - **`src/app/main.ts` constructs
-  `createRegionStateMachine()` but never wires its output into `store.current.regions`**
-  (`void regionMachine;`), so there is no region id yet for a test to target. Once regions
-  are populated from surfaces, this skip should start running - the assertion is already
-  written.
+  `quality.subscribe` handler force-dispatches `setMode('live-overlay')`), plus the region
+  state machine now that `src/app/regions.ts` wires it into the store: waits for at least one
+  region to exist (created reactively from `registerSurface` commits), drives the mode to
+  `captured-shell` and polls a non-floor horizontal region to `CAPTURED`, calls
+  `AppHandle.reportObstruction(point)` at its centre ("a person crossed here") and asserts it
+  goes `HYBRID`/`dynamic_obstruction`, then - since that evidence is one-shot and never
+  re-reported - polls it back to `CAPTURED` once the obstruction hold time (500ms,
+  `src/core/regions.ts`) elapses via the state machine's own `TRANSITION` step. It then forces
+  a region to `FALLBACK` for a reason the frame loop's own baseline-recovery never touches
+  (`budget` - see `src/app/regions.ts`'s note on why `dynamic_obstruction` would race that
+  check) and confirms a `move`/`delete` of an object inside it is rejected with
+  `region_fallback`. A simpler smoke test also force-dispatches `setRegionState` directly on
+  the first region that exists.
 - **`interaction-grab.spec.ts`**: spawns a cube, moves a tracked hand onto it, pinches
   (`poseId = 'pinch'`, which is a fixed hand shape - see below), translates the hand 0.3m,
   releases, and checks the object's `currentPose` moved with it; plus the programmatic
@@ -181,12 +193,12 @@ full writeup with citations to the exact `.d.ts`/`.js` files)
   and has different bottlenecks than the Quest 3's mobile GPU. Treat `test-results/perf.json`
   as a regression trip-wire ("did this change make the stack visibly worse or get it
   stuck"), not as a stand-in for on-device profiling.
-- **Region state machine is not wired into the store yet.** `src/app/main.ts` constructs
-  `createRegionStateMachine()` but never uses its output to populate
-  `store.current.regions`, so there's currently no region for a "dynamic obstruction forces
-  FALLBACK" test to target end-to-end (see `gate5-dynamic-reality.spec.ts`, which skips that
-  half with an explanatory message). The quality-manager-driven mode fallback (tracking
-  lost -> tier 0 -> `live-overlay`) *is* fully wired and is tested.
+- **Depth-sensing freshness is unreliable under emulation.** `DepthOcclusion.state.ageMs` is
+  `Infinity` whenever the session has never reported a depth-sensing texture, which is common
+  here. `src/app/regions.ts`'s `RegionManager` treats a non-finite depth age as "no evidence
+  either way" (0) rather than feeding it straight into `RegionStateMachine.tick()`, which
+  would otherwise force every newly-`HYBRID` region straight to `FALLBACK`/`depth_stale`
+  before an obstruction's hold time ever elapses.
 - **`AppHandle.enterAR()`'s contract says it "resolves after the first frame renders"**, but
   as implemented in `src/app/main.ts` it resolves as soon as `requestARSession()` resolves,
   without awaiting the `firstFramePromise` it sets up. In practice this hasn't caused test

@@ -4,7 +4,22 @@
  * the simulator installs the IWER runtime *before* calling it.
  */
 import type { PerfTracker, QualityManager, SceneStore, FreshnessBus } from '@/core/api';
-import type { Pose, QualityDecision, SceneSnapshot } from '@/core/types';
+import type { Pose, QualityDecision, SceneSnapshot, Vec3 } from '@/core/types';
+
+/**
+ * Guided multi-viewpoint capture UI state (see src/app/guide.ts). Rendered by
+ * the HUD as a floor marker + hint text so a user standing in front of the
+ * real object knows where to move next. `step`/`total` are 1-based/inclusive
+ * while `active`; both are 0 when inactive.
+ */
+export interface CaptureGuide {
+  active: boolean;
+  objectId: string | null;
+  step: number;
+  total: number;
+  targetPose: Pose | null;
+  hint: string;
+}
 
 export interface XRFeatureReport {
   supported: boolean;
@@ -53,6 +68,16 @@ export interface AppHandle {
   /** Grab an object by id with the given hand (test/voice path; same resolver). */
   grab(objectId: string, hand: 'left' | 'right'): boolean;
   release(hand: 'left' | 'right'): void;
+  /**
+   * Report dynamic-obstruction evidence ("a person/hand/pet crossed here") at
+   * a world-space point, for whichever region(s) contain it. Same evidence
+   * path the frame loop feeds automatically from hand/head positions; this
+   * is the one-shot version for tests and the voice layer. Optional only for
+   * backwards compatibility with older AppHandle consumers/mocks.
+   */
+  reportObstruction?(point: Vec3): void;
+  /** Guided multi-viewpoint clean-plate capture UI state; see src/app/guide.ts. */
+  readonly guide?: CaptureGuide;
   dispose(): void;
 }
 
