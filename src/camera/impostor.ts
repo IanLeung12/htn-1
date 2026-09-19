@@ -350,6 +350,18 @@ export class ImpostorViews {
     return !!entry && entry.active && entry.mesh.visible;
   }
 
+  /**
+   * Forces this frame's impostor for `objectId` invisible (its own outline stays, since
+   * "moved from here" is still true) - used when the camera has moved too far from where the
+   * appearance frames were captured (see `edit/appearance.ts`'s `cameraMovedFromAppearance`):
+   * a flat single-viewpoint billboard reads as a photo from any other angle, so the caller
+   * falls back to the depth-mesh appearance path (src/render/objects.ts) instead.
+   */
+  forceHide(objectId: string): void {
+    const entry = this.entries.get(objectId);
+    if (entry) entry.mesh.visible = false;
+  }
+
   private buildEntry(): ImpostorEntry {
     const texture = new THREE.DataTexture(new Uint8ClampedArray(4), 1, 1, THREE.RGBAFormat);
     texture.colorSpace = THREE.SRGBColorSpace;
