@@ -229,7 +229,7 @@ export interface SceneSnapshot {
   surfaces: Record<string, Surface>;
   regions: Record<string, Region>;
   /** Id of the object being previewed (ghost), if any. */
-  preview?: { objectId: string; pose: Pose; action: EditAction };
+  preview?: { objectId: string; pose: Pose; action: EditAction; scale?: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +263,7 @@ export type Intent =
       collision: ProxyShape;
       occlusion: ProxyShape;
     }
-  | { kind: 'preview'; objectId: string; pose: Pose; action: EditAction }
+  | { kind: 'preview'; objectId: string; pose: Pose; action: EditAction; scale?: number }
   | { kind: 'clearPreview' };
 
 export type IntentSource = 'hand' | 'controller' | 'voice' | 'ui' | 'system' | 'test';

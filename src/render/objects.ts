@@ -270,6 +270,7 @@ export class ObjectViews {
       preview.pose.rotation.z,
       preview.pose.rotation.w,
     );
+    mesh.scale.setScalar(preview.scale ?? 1);
   }
 
   private clearPreview(previewGroup: THREE.Group): void {
