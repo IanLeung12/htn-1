@@ -30,6 +30,11 @@ export interface HandState {
   ray: RayPose;
   /** 'hand' when driven by hand-tracking joints, 'controller' otherwise, 'none' if inactive. */
   source: 'hand' | 'controller' | 'none';
+  /** World-space wrist joint pose (hand-tracking only; zero/identity otherwise). Used by the hand menu. */
+  wristPosition: THREE.Vector3;
+  wristQuaternion: THREE.Quaternion;
+  /** Approximate world-space palm-normal direction (hand-tracking only; zero length otherwise). */
+  palmNormal: THREE.Vector3;
 }
 
 export interface InputState {
@@ -51,6 +56,9 @@ function makeHandState(): HandState {
     selectEnd: false,
     ray: { origin: new THREE.Vector3(), direction: new THREE.Vector3(0, 0, -1) },
     source: 'none',
+    wristPosition: new THREE.Vector3(),
+    wristQuaternion: new THREE.Quaternion(),
+    palmNormal: new THREE.Vector3(),
   };
 }
 
@@ -79,6 +87,8 @@ export class XRInput {
   private readonly controllers: Record<Handedness, ControllerTrack>;
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
+  private readonly tmpC = new THREE.Vector3();
+  private readonly tmpD = new THREE.Vector3();
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;
@@ -165,6 +175,8 @@ export class XRInput {
     let indexTip: XRJointPose | undefined;
     let thumbTip: XRJointPose | undefined;
     let wristPose: XRJointPose | undefined;
+    let indexMetaPose: XRJointPose | undefined;
+    let pinkyMetaPose: XRJointPose | undefined;
 
     hand.forEach((jointSpace: XRJointSpace, jointName: string) => {
       total++;
@@ -186,8 +198,44 @@ export class XRInput {
       if (jointName === 'index-finger-tip') indexTip = pose;
       if (jointName === 'thumb-tip') thumbTip = pose;
       if (jointName === 'wrist') wristPose = pose;
+      if (jointName === 'index-finger-metacarpal') indexMetaPose = pose;
+      if (jointName === 'pinky-finger-metacarpal') pinkyMetaPose = pose;
       idx++;
     });
+
+    // Wrist pose + approximate palm normal, used by the hand menu (see
+    // src/render/hand-menu.ts). Written into the persistent HandState vectors
+    // to avoid per-frame allocation.
+    if (wristPose) {
+      out.wristPosition.set(wristPose.transform.position.x, wristPose.transform.position.y, wristPose.transform.position.z);
+      out.wristQuaternion.set(
+        wristPose.transform.orientation.x,
+        wristPose.transform.orientation.y,
+        wristPose.transform.orientation.z,
+        wristPose.transform.orientation.w,
+      );
+    } else {
+      out.wristPosition.set(0, 0, 0);
+      out.wristQuaternion.identity();
+    }
+
+    if (wristPose && indexMetaPose && pinkyMetaPose) {
+      this.tmpC
+        .set(indexMetaPose.transform.position.x, indexMetaPose.transform.position.y, indexMetaPose.transform.position.z)
+        .sub(out.wristPosition);
+      this.tmpD
+        .set(pinkyMetaPose.transform.position.x, pinkyMetaPose.transform.position.y, pinkyMetaPose.transform.position.z)
+        .sub(out.wristPosition);
+      // Cross-product order flips with handedness so the normal points out of
+      // the palm (away from the back of the hand) for both hands.
+      if (handedness === 'left') {
+        out.palmNormal.crossVectors(this.tmpD, this.tmpC).normalize();
+      } else {
+        out.palmNormal.crossVectors(this.tmpC, this.tmpD).normalize();
+      }
+    } else {
+      out.palmNormal.set(0, 0, 0);
+    }
 
     out.confidence = total > 0 ? reported / total : 0;
     out.active = out.confidence > 0;

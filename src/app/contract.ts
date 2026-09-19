@@ -54,6 +54,12 @@ export interface AppHandle {
   grab(objectId: string, hand: 'left' | 'right'): boolean;
   release(hand: 'left' | 'right'): void;
   dispose(): void;
+  /**
+   * Voice command layer (src/app/voice.ts), wired up by src/app/voice-install.ts.
+   * Optional: undefined until main.ts wires it in, so tests/simulator can
+   * feature-detect it (see tests/e2e/voice.spec.ts).
+   */
+  voice?: { submitText(text: string): void; listening: boolean };
 }
 
 export type StartApp = (options?: AppOptions) => Promise<AppHandle>;
