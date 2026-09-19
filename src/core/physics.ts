@@ -31,6 +31,12 @@ export interface PhysicsOptions {
    * placed just past that edge falls through the desk. Default 0.15 m.
    */
   supportMarginM?: number;
+  /**
+   * A support whose top has crept up to this far above an object's bottom (a smoothed,
+   * re-estimated table plane rising a centimetre) still supports it and pushes it up, instead
+   * of being skipped as "above the object" so the object falls through. Default 0.06 m.
+   */
+  supportPenetrationM?: number;
   /** Fixed physics step, ms. Default 1000/60. */
   stepMs?: number;
   /** Max fixed substeps run per step() call. Default 4. */
@@ -98,6 +104,7 @@ export function createProxyPhysics(opts?: PhysicsOptions): ProxyPhysics {
   const wakeMoveEpsilonM = opts?.wakeMoveEpsilonM ?? 0.001;
   const moveReportEpsilonM = opts?.moveReportEpsilonM ?? 0.0005;
   const supportMarginM = opts?.supportMarginM ?? 0.15;
+  const supportPenetrationM = opts?.supportPenetrationM ?? 0.06;
 
   const bodies = new Map<string, Body>();
   let accumulatorMs = 0;
@@ -236,7 +243,7 @@ export function createProxyPhysics(opts?: PhysicsOptions): ProxyPhysics {
 
       for (const s of Object.values(snapshot.surfaces)) {
         if (s.orientation !== 'horizontal') continue;
-        if (s.aabb.max.y > before + 1e-6) continue; // must already be at/below the object
+        if (s.aabb.max.y > before + supportPenetrationM) continue; // must already be at/below the object (small creep allowed)
         const m = s.label === 'floor' ? 0 : supportMarginM;
         if (minX > s.aabb.max.x + m || maxX < s.aabb.min.x - m || minZ > s.aabb.max.z + m || maxZ < s.aabb.min.z - m) continue;
         if (s.aabb.max.y > supportY) supportY = s.aabb.max.y;
@@ -245,7 +252,7 @@ export function createProxyPhysics(opts?: PhysicsOptions): ProxyPhysics {
       for (const other of working.values()) {
         if (other.id === o.id) continue;
         const otherTop = other.pos.y + other.he.y;
-        if (otherTop > before + 1e-6) continue;
+        if (otherTop > before + supportPenetrationM) continue;
         const oMinX = other.pos.x - other.he.x;
         const oMaxX = other.pos.x + other.he.x;
         const oMinZ = other.pos.z - other.he.z;

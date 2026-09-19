@@ -73,6 +73,20 @@ describe('createProxyPhysics', () => {
     expect((final2.objects.far as EditableObject).currentPose.position.y).toBeCloseTo(0.1, 2);
   });
 
+  it('keeps an object on a table whose re-estimated top rose a centimetre above its bottom', () => {
+    const tableAt = (top: number) =>
+      makeSurface({ id: 'desk', label: 'table', orientation: 'horizontal', aabb: { min: { x: -1, y: top - 0.01, z: -1 }, max: { x: 1, y: top, z: 1 } } });
+    const obj = box('cube', 0.6); // resting on a 0.5 m table: bottom 0.5
+    const physics = createProxyPhysics();
+    const { snapshot: settled } = advance(physics, makeSnapshot({ objects: { cube: obj }, surfaces: { desk: tableAt(0.5) } }), 500);
+    expect((settled.objects.cube as EditableObject).currentPose.position.y).toBeCloseTo(0.6, 2);
+    // The smoothed plane creeps up 2 cm and physics wakes the body: it must ride up, not fall through.
+    const risen = makeSnapshot({ objects: settled.objects, surfaces: { desk: tableAt(0.52) } });
+    physics.wake('cube');
+    const { snapshot: after } = advance(physics, risen, 1000);
+    expect((after.objects.cube as EditableObject).currentPose.position.y).toBeCloseTo(0.62, 2);
+  });
+
   it('settles a dropped object onto a table top within 1s and then sleeps', () => {
     const table = makeSurface({
       id: 'table',
