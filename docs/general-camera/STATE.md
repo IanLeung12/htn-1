@@ -169,6 +169,39 @@ green; Playwright camera specs 6/6 (phase1 4, capture 1, screenshot 1); XR suite
 - Tier policy: stereo frames with LR coverage >= 0.8 count as measured (tier A allowed).
 - Landing card: device select, stereo mode, serial (persisted).
 
+## ZED 2 live session (2026-09-19, ZED SDK bridge, desk at 0.75 m)
+
+Setup: `camera.html?source=zed-sdk&bridge=ws://localhost:8765&autostart=1&height=0.75`,
+bridge `tools/zed-bridge/server.py --depth-mode ULTRA` (25-30 fps, tracking OK, tier cap A).
+Chrome must be the foreground window: a covered tab reports `document.hidden`, the frame
+loop is throttled and RANSAC never runs (the page looks alive but surfaces stay empty).
+
+Fixed in this session (all with unit tests; 406 pass):
+
+- Objects standing on a registered table were rejected as "table-top noise" because the
+  footprint test was `cluster inside table`; now only thin sheets (< 6 cm) inside the
+  footprint or clusters covering most of the table are dropped (`depth-surfaces.ts`).
+- Discover blocked the main thread ~20 s per object and could freeze the page: the synthetic
+  plate's nearest-donor search ringed through empty buckets for every texel when donors were
+  sparse. Linear scan up to 4096 donors, donor-extent ring cap otherwise (`synthetic-plate.ts`).
+- Drag runaway: a depth hit beyond 1.5x the grab distance is discarded, the object stays on
+  its grab plane (`input/pointer.ts`, zed-sdk-bridge branch).
+- Discovered real objects fell 0.7 m to the floor when the smoothed desk plane flickered:
+  they are kinematic until the user moves them (`app.ts` discovery).
+- Spawned cubes fell through the desk edge: estimated table boxes end at the sensor's
+  minimum range (0.3 m), so `core/physics.ts` supports footprints overhanging a box by
+  `supportMarginM` (0.15 m); spawn also prefers the nearest table the pointer ray crosses
+  over a floor point metres away when no depth is under the pointer.
+- Live depth occluder (`depth-occluder.ts`, `o` key, tuning `occluderEnabled`/`occluderBiasM`):
+  spawned objects are hidden behind real ones using the live depth map.
+
+Verified live: Discover finds the cans/controller at the true height (tier D, kinematic),
+a mouse drag moves a can 10-20 cm along the desk and it stays at desk height with the
+impostor following; spawned cubes land on the desk top (y = desk + half size).
+Still open: transient 'table' planes at 0.9-1.5 m (laptop/monitor tops) and the desk box
+splitting into two entries (0.71/0.77) in the registry; a person entering the view drops
+depth confidence and picks fall back to surface mode.
+
 ## Next steps
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,
