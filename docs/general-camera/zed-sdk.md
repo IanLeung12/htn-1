@@ -95,8 +95,21 @@ Text commands from the page: `{"cmd":"reset"}`, `{"cmd":"config","jpegWidth":128
   or a wall when no floor is in view. Otherwise the tuning height is applied as an offset
   (`tuning`) until the estimator reports its dominant horizontal plane (`correction.groundY`,
   confidence >= 0.5, >= 500 inliers, >= 0.5 m extent), which then becomes y = 0 (`plane`;
-  changes under 3 cm ignored, larger ones smoothed by half per run). Horizontal planes more
-  than 1.6 m above the ground are dropped (ceiling, not tables).
+  changes under 3 cm ignored, larger ones smoothed by half per run) - but only when the camera
+  height above that plane is itself plausible (within 0.35 m of the tuning height); a desk right
+  under the camera stays a table. Horizontal planes more than 1.6 m above the ground are dropped
+  (ceiling, not tables).
+- Surfaces with a tracked pose (`trustPose`): the ground candidate is fitted with the pose's true
+  up (10 degree cone; a band of near-range holes used to yield a 35 degree "ground"), horizontal
+  planes are extracted FIRST with the up hint (best-first extraction let a tilted fit eat the
+  desk), and a horizontal plane with >= 300 inliers 0.02-1.2 m below the camera is a table whatever
+  its extent (a desk seen edge-on from a camera resting on it). Picks in range holes fall back to
+  the nearest horizontal surface along the pixel ray (`pickOnSurfaceThroughHole(..., fallbackNearest)`).
+- Bridge `--depth-min` (default 0.2 m, `InitParameters.depth_minimum_distance`) keeps the near desk
+  in range; the ZED's default 0.3 m left the bottom third of the frame invalid.
+- `tests/unit/fixtures/zed-sdk-desk-320x180.json` is a real bridge frame (camera on a desk, tuning
+  height 0.75) captured with `test-results/dumpmap.mjs`; `tests/unit/camera-zedsdk-desk.test.ts`
+  asserts the desk table, valid-pixel picks and hole picks on it.
 - Depth is `MEASURE.DEPTH`: z-distance along the camera forward axis (what `DepthMap.metric`
   expects), holes/NaN and pixels under confidence 128 become 0. `DepthMap.confidence` is 0.95
   (measurement grade; `tier-cap.ts` treats `'zed-sdk'` like `'sensor'`, tier A) scaled down when

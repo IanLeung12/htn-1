@@ -70,6 +70,19 @@ describe('ZedSdkPoseSource floor policy', () => {
     expect(src.pose.position.y).toBeCloseTo(0.84, 6);
   });
 
+  it('leaves a desk right under the camera to the estimator (not adopted as the floor)', async () => {
+    const { client, push } = stubClient();
+    const src = new ZedSdkPoseSource(client, { cameraHeightM: 0.75 });
+    await src.start();
+    push({ pose: identityAt(0, 0.05, 0), floorY: 0 }, 100);
+    expect(src.floorMode).toBe('tuning');
+    expect(src.pose.position.y).toBeCloseTo(0.75, 9);
+    // Dominant plane 0.05 m under the published camera (y = 0.70): a 0.05 m camera height is not plausible.
+    src.applyGroundPlane(0.7, 0.95, 900, 1.4);
+    expect(src.floorMode).toBe('tuning');
+    expect(src.pose.position.y).toBeCloseTo(0.75, 9);
+  });
+
   it('drops trackingOk when frames stop or the SDK is searching', async () => {
     const { client, push } = stubClient();
     const src = new ZedSdkPoseSource(client, { cameraHeightM: 1 });

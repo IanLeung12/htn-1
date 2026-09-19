@@ -738,7 +738,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     const point = pickFromMapRobust(map, px, py, surfaceEstimator.lastFrame);
     if (!point) {
       // Textureless hole (stereo): a fitted horizontal surface crossing the pixel ray near the nearest valid depth.
-      return pickOnSurfaceThroughHole(map, px, py, surfaceEstimator.lastFrame, Object.values(store.current.surfaces));
+      return pickOnSurfaceThroughHole(map, px, py, surfaceEstimator.lastFrame, Object.values(store.current.surfaces), 24, 0.05, 0.3, !!zedSdk);
     }
     const below = surfaceBelow(store.current, { x: point.x, y: point.y + 0.05, z: point.z });
     if (below && point.y + 0.05 - below.aabb.max.y < 0.2) point.y = below.aabb.max.y;

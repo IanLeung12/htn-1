@@ -27,11 +27,11 @@
  */
 import type { Aabb, Millis, Pose, Surface, Vec3 } from '@/core/types';
 import { IDENTITY_QUAT } from '@/core/types';
-import { aabbIntersects, distance, quatFromAxisAngle, quatMultiply, quatRotateVec3 } from '@/core/math';
+import { aabbIntersects, distance, quatConjugate, quatFromAxisAngle, quatMultiply, quatRotateVec3 } from '@/core/math';
 import type { DepthMap, EstimatedSurface, SurfaceEstimator } from '@/camera/contract';
 import type { DetectedVolume } from '@/capture/contract';
 import { makeFloorSurface } from './floor-prior';
-import { clusterAbovePlane, depthToPointsWithRows, extractPlanes, mergeHorizontalPlanes, ransacPlane, type PlaneFit } from './ransac';
+import { clusterAbovePlane, depthToPointsWithRows, extractPlanes, findHorizontalPlanes, mergeHorizontalPlanes, ransacPlane, type PlaneFit } from './ransac';
 
 /** The subset of camera tuning this estimator consumes (see src/camera/tuning.ts). */
 export interface SurfaceTuning {
@@ -111,6 +111,12 @@ export interface FrameCorrection {
 }
 /** Horizontal planes higher than this above the ground are ceilings/shelves, not tables. */
 const TABLE_MAX_HEIGHT_M = 1.6;
+/** trustPose: the pose knows which way is up, so the ground candidate must be within this of horizontal. */
+const TRACKED_GROUND_CONE_RAD = (10 * Math.PI) / 180;
+/** trustPose: a horizontal plane with this many inliers between TRACKED_TABLE_MIN/MAX_BELOW_M under the camera is a table whatever its extent (a desk seen edge-on from a camera resting on it). */
+const TRACKED_TABLE_MIN_INLIERS = 300;
+const TRACKED_TABLE_MIN_BELOW_M = 0.02;
+const TRACKED_TABLE_MAX_BELOW_M = 1.2;
 
 const FLOOR_MIN_INLIER_FRACTION = 0.1;
 const ROLL_CLAMP_RAD = (5 * Math.PI) / 180;
@@ -314,9 +320,12 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       }
     }
     const groundThreshold = Math.min(ransacOpts.thresholdM, GROUND_THRESHOLD_M);
+    // Tracked pose: true up in camera space and a tight cone (a band of holes must not yield a 35-degree "ground").
+    const upHint: Vec3 = this.trustPose ? quatRotateVec3(quatConjugate(depth.pose.rotation), { x: 0, y: 1, z: 0 }) : { x: 0, y: 1, z: 0 };
+    const groundCone = this.trustPose ? TRACKED_GROUND_CONE_RAD : this.maxTiltRad;
     let dominant: PlaneFit | null = null;
     if (bandPoints >= ransacOpts.minInliers) {
-      const bandFit = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, normalHint: { x: 0, y: 1, z: 0 }, maxNormalAngleRad: this.maxTiltRad, candidateMask: bandMask });
+      const bandFit = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, normalHint: upHint, maxNormalAngleRad: groundCone, candidateMask: bandMask });
       if (bandFit) {
         // Recount inliers over ALL points so the fit's extent/confidence reflect the whole plane.
         dominant = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, iterations: 1, normalHint: bandFit.normal, maxNormalAngleRad: 0.02, seed: 3 }) ?? bandFit;
@@ -324,7 +333,7 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       }
     }
     if (!dominant) {
-      dominant = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, normalHint: { x: 0, y: 1, z: 0 }, maxNormalAngleRad: this.maxTiltRad });
+      dominant = ransacPlane(points, { ...ransacOpts, thresholdM: groundThreshold, normalHint: upHint, maxNormalAngleRad: groundCone });
     }
 
     let floorInliers = 0;
@@ -381,9 +390,21 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       this.groundExtent = Number.isFinite(gmin.x) ? { min: gmin, max: gmax } : null;
     }
 
-    // Best-first extraction (see ransac.ts extractPlanes), then merge layered horizontals.
-    const extracted = extractPlanes(points, { ...ransacOpts, maxPlanes: 8, minInliers: tuning.planeMinInliers });
-    const horizontal = mergeHorizontalPlanes(extracted.horizontal, Math.max(0.08, 2 * tuning.ransacThresholdM));
+    // Best-first extraction (see ransac.ts extractPlanes), then merge layered horizontals. With a
+    // tracked pose the horizontals are searched FIRST with the up hint: best-first otherwise lets a
+    // tilted fit through desk + wall points eat the desk (real ZED frame: 883 desk inliers lost to a
+    // 30-degree plane that was then discarded as neither horizontal nor vertical).
+    let hinted: PlaneFit[] = [];
+    let extractMask: Uint8Array | undefined;
+    if (this.trustPose) {
+      hinted = findHorizontalPlanes(points, { ...ransacOpts, maxPlanes: 4, minInliers: tuning.planeMinInliers });
+      if (hinted.length > 0) {
+        extractMask = new Uint8Array(pointCount).fill(1);
+        for (const fit of hinted) for (const idx of fit.inliers) extractMask[idx] = 0;
+      }
+    }
+    const extracted = extractPlanes(points, { ...ransacOpts, maxPlanes: 8, minInliers: tuning.planeMinInliers, candidateMask: extractMask });
+    const horizontal = mergeHorizontalPlanes([...hinted, ...extracted.horizontal], Math.max(0.08, 2 * tuning.ransacThresholdM));
     const vertical = extracted.vertical;
     this.lastFits = { horizontal, vertical };
 
@@ -408,11 +429,16 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
     const newTrackedTables: Tracked[] = [];
     const tableFits: PlaneFit[] = [];
     for (const fit of horizontal) {
-      if (Math.abs(fit.centroid.y - groundY) < TABLE_MIN_OFFSET_M) continue; // the ground itself
-      if (fit.centroid.y - groundY > TABLE_MAX_HEIGHT_M) continue; // ceiling / high shelf
+      // trustPose: y = 0 is the floor by construction (the pose source's floor policy), so the ground
+      // test is against 0 even when the dominant plane in view is a desk (which is then a table).
+      const floorY = this.trustPose ? 0 : groundY;
+      if (Math.abs(fit.centroid.y - floorY) < TABLE_MIN_OFFSET_M) continue; // the ground itself
+      if (fit.centroid.y - floorY > TABLE_MAX_HEIGHT_M) continue; // ceiling / high shelf
       const ex = fit.extentMax.x - fit.extentMin.x;
       const ez = fit.extentMax.z - fit.extentMin.z;
-      if (Math.max(ex, ez) < tuning.planeMinExtentM || Math.min(ex, ez) < tuning.planeMinExtentM / 2) continue;
+      const belowCameraM = depth.pose.position.y - fit.centroid.y;
+      const trackedTable = this.trustPose && fit.inliers.length >= TRACKED_TABLE_MIN_INLIERS && belowCameraM >= TRACKED_TABLE_MIN_BELOW_M && belowCameraM <= TRACKED_TABLE_MAX_BELOW_M;
+      if (!trackedTable && (Math.max(ex, ez) < tuning.planeMinExtentM || Math.min(ex, ez) < tuning.planeMinExtentM / 2)) continue;
       const aabb: Aabb = { min: fit.extentMin, max: fit.extentMax };
       const matched = this.trackedTables.find((t) => Math.abs(t.aabb.min.y - aabb.min.y) <= TABLE_ID_MATCH_HEIGHT_M && aabbIntersects(t.aabb, aabb));
       const id = matched ? matched.id : `camera-plane-${this.nextTableIndex++}`;

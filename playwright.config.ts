@@ -6,14 +6,14 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   use: {
-    baseURL: 'http://localhost:5180',
+    baseURL: 'http://localhost:5183',
     headless: true,
     viewport: { width: 1280, height: 800 },
     launchOptions: { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] },
   },
   webServer: {
     command: 'npm run dev',
-    url: 'http://localhost:5180',
+    url: 'http://localhost:5183',
     reuseExistingServer: true,
     timeout: 60_000,
   },

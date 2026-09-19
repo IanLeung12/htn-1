@@ -98,12 +98,15 @@ export class ZedSdkPoseSource implements PoseSource {
 
   /**
    * The surface estimator's dominant horizontal plane, at world y `groundY` (in the frame this
-   * source currently publishes). Unless the SDK floor was plausible, that plane becomes y = 0:
-   * the desk under a camera that stares at the desk, the floor when the floor is in view.
+   * source currently publishes). Unless the SDK floor was plausible, that plane becomes y = 0 when
+   * it can be the floor (camera height above it within the tolerance of the tuning height); a desk
+   * right under the camera is left to the estimator as a table instead.
    */
   applyGroundPlane(groundY: number, confidence: number, inliers: number, extentM: number): void {
-    if (this.floorMode === 'sdk' || this.floorMode === 'unknown') return;
+    if (this.floorMode === 'sdk' || this.floorMode === 'unknown' || !this.rawPose) return;
     if (!(confidence >= PLANE_MIN_CONFIDENCE) || inliers < PLANE_MIN_INLIERS || extentM < PLANE_MIN_EXTENT_M) return;
+    const heightAbovePlane = this.rawPose.position.y + this.floorOffsetM - groundY;
+    if (Math.abs(heightAbovePlane - this.cameraHeightM) > SDK_FLOOR_TOLERANCE_M) return;
     const rawPlaneY = groundY - this.floorOffsetM;
     const target = -rawPlaneY;
     if (this.floorMode === 'plane' && Math.abs(target - this.floorOffsetM) < PLANE_MIN_CHANGE_M) return;

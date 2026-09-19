@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover
 
 
 DEFAULT_PORT = 8765
-DEPTH_MIN_M = 0.3
+DEPTH_MIN_M = 0.2
 DEPTH_MAX_M = 20.0
 DEFAULT_JPEG_WIDTH = 640
 DEFAULT_DEPTH_WIDTH = 320
@@ -229,7 +229,7 @@ class PlaybackSource:
 class ZedSource:
     """The real camera through pyzed. Depth mode falls back NEURAL -> ULTRA -> PERFORMANCE when the GPU cannot run it."""
 
-    def __init__(self, depth_mode: str, resolution: str = "HD720", fps: int = 30, floor_origin: bool = True) -> None:
+    def __init__(self, depth_mode: str, resolution: str = "HD720", fps: int = 30, floor_origin: bool = True, depth_min_m: float = DEPTH_MIN_M) -> None:
         import pyzed.sl as sl  # imported lazily so --fake / --play work without the SDK
 
         self.sl = sl
@@ -243,7 +243,7 @@ class ZedSource:
             init.depth_mode = getattr(sl.DEPTH_MODE, mode)
             init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
             init.coordinate_units = sl.UNIT.METER
-            init.depth_minimum_distance = DEPTH_MIN_M
+            init.depth_minimum_distance = depth_min_m
             init.depth_maximum_distance = DEPTH_MAX_M
             init.sdk_verbose = 0
             err = self.cam.open(init)
@@ -568,7 +568,7 @@ async def run(args: argparse.Namespace) -> int:
         source = PlaybackSource(args.play)
     else:
         try:
-            source = ZedSource(args.depth_mode, args.resolution, args.fps, floor_origin=not args.no_floor_origin)
+            source = ZedSource(args.depth_mode, args.resolution, args.fps, floor_origin=not args.no_floor_origin, depth_min_m=args.depth_min)
         except RuntimeError as exc:
             print(f"[zed-bridge] {exc}", file=sys.stderr, flush=True)
             return 2
@@ -605,6 +605,7 @@ def main() -> int:
     ap.add_argument("--play", metavar="NPZ", help="replay a --record sequence instead of the camera")
     ap.add_argument("--record", metavar="NPZ", help="save the streamed sequence to this .npz and exit after --seconds")
     ap.add_argument("--seconds", type=float, default=0.0, help="run for this long then exit (0 = forever; --record defaults to 10)")
+    ap.add_argument("--depth-min", type=float, default=DEPTH_MIN_M, help="InitParameters.depth_minimum_distance (m); 0.2 keeps the near desk in range at a small fps/quality cost")
     ap.add_argument("--depth-mode", default="NEURAL", choices=["NEURAL_PLUS", "NEURAL", "NEURAL_LIGHT", "ULTRA", "QUALITY", "PERFORMANCE"])
     ap.add_argument("--resolution", default="HD720", choices=["HD720", "HD1080", "VGA"])
     ap.add_argument("--fps", type=int, default=30)

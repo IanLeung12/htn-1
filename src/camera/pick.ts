@@ -102,7 +102,7 @@ export function pixelRay(map: DepthMap, px: number, py: number, frame: WorldFram
  * the pick, with confidence 0.5. Null when the hole is larger than the search or no
  * surface fits.
  */
-export function pickOnSurfaceThroughHole(map: DepthMap, px: number, py: number, frame: WorldFrame | null, surfaces: readonly Surface[], maxRadius = 24, tolM = 0.05, padM = 0.3): PickResult | null {
+export function pickOnSurfaceThroughHole(map: DepthMap, px: number, py: number, frame: WorldFrame | null, surfaces: readonly Surface[], maxRadius = 24, tolM = 0.05, padM = 0.3, fallbackNearest = false): PickResult | null {
   const near = nearestValidDepth(map, px, py, maxRadius);
   if (!near) return null;
   const ray = pixelRay(map, px, py, frame);
@@ -119,5 +119,20 @@ export function pickOnSurfaceThroughHole(map: DepthMap, px: number, py: number, 
     if (hit.x < s.aabb.min.x - padM || hit.x > s.aabb.max.x + padM || hit.z < s.aabb.min.z - padM || hit.z > s.aabb.max.z + padM) continue;
     if (!best || err < best.err) best = { point: hit, err };
   }
-  return best ? { point: best.point, confidence: 0.5, mode: 'surface' } : null;
+  if (best) return { point: best.point, confidence: 0.5, mode: 'surface' };
+  if (!fallbackNearest) return null;
+  // Measured depth with range holes (ZED near limit): the nearest horizontal surface the ray
+  // crosses inside its footprint (a downward ray meets a desk before the floor), at lower confidence.
+  let nearest: { point: Vec3; t: number } | null = null;
+  for (const s of surfaces) {
+    if (s.orientation !== 'horizontal') continue;
+    const planeY = s.aabb.max.y;
+    if (Math.abs(ray.direction.y) < 1e-6) continue;
+    const t = (planeY - ray.origin.y) / ray.direction.y;
+    if (!(t > 0)) continue;
+    const hit = { x: ray.origin.x + ray.direction.x * t, y: planeY, z: ray.origin.z + ray.direction.z * t };
+    if (hit.x < s.aabb.min.x - padM || hit.x > s.aabb.max.x + padM || hit.z < s.aabb.min.z - padM || hit.z > s.aabb.max.z + padM) continue;
+    if (!nearest || t < nearest.t) nearest = { point: hit, t };
+  }
+  return nearest ? { point: nearest.point, confidence: 0.3, mode: 'surface' } : null;
 }
