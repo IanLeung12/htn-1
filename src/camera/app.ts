@@ -70,7 +70,7 @@ import { TuningStore, type CameraTuning } from './tuning';
 import { TuningPanel } from './tuning-panel';
 import { synthesizeSupportPlate, tierForSyntheticPlate } from './synthetic-plate';
 import { footprintFromProxy } from '@/capture';
-import { pickFromMapRobust } from './pick';
+import { pickFromMapRobust, pickOnSurfaceThroughHole, type PickResult } from './pick';
 import { surfaceBelow } from '@/core';
 import { CameraDiagnostics, type CameraDiagnosticsState } from './diagnostics';
 import { createDepthEstimator } from './depth';
@@ -123,6 +123,12 @@ export interface CameraHandle {
   readonly tuning: TuningStore;
   /** World point the estimated depth sees at a canvas NDC position (snapped onto the surface below); null without depth. */
   pickWorld(ndcX: number, ndcY: number): Vec3 | null;
+  /**
+   * `pickWorld` with provenance: 'depth' (confidence 1) when the pixel has depth, 'surface'
+   * (confidence 0.5) when it is a hole and a fitted horizontal surface crosses the pixel ray
+   * within 5 cm of the nearest valid depth (<= 24 px away) - the bare desk between matched edges.
+   */
+  pickWorldDetailed(ndcX: number, ndcY: number): PickResult | null;
   /** Capture appearance + synthetic support plate for a discovered real object (tier D) so it can be moved. */
   prepareRealObject(objectId: string): Promise<{ tier: string; donorFraction: number }>;
   /**
@@ -384,7 +390,9 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     out.direction.y = rayDir.y;
     out.direction.z = rayDir.z;
   };
-  const pointer = new PointerInputAdapter({ element: canvas, store, rayFromNdc, depthPick: (x, y) => pickWorld(x, y) });
+  // Events over the video / stereo display canvas (under the overlay) count too: synthetic dispatches
+  // and any element that ends up above the overlay bubble to the container.
+  const pointer = new PointerInputAdapter({ element: canvas, extraTargets: [container], store, rayFromNdc, depthPick: (x, y) => pickWorld(x, y) });
 
   const physics = createProxyPhysics();
   const physicsBridge = createPhysicsBridge(store, physics, conditions);
@@ -714,9 +722,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
 
   /** World point the newest estimated depth sees at an NDC position, snapped onto the surface below it. */
   function pickWorld(ndcX: number, ndcY: number): Vec3 | null {
+    return pickWorldDetailed(ndcX, ndcY)?.point ?? null;
+  }
+
+  function pickWorldDetailed(ndcX: number, ndcY: number): PickResult | null {
     const map = depthEstimator.latest;
     if (!map || map.confidence < 0.25 || map.source === 'plane-prior') return null;
-    // (stereo maps carry validFraction as confidence; holes are 0 depth and pick as null below)
+    // (stereo maps carry validFraction as confidence; holes are 0 depth and fall through to the surface pick)
     if (performance.now() - map.timestamp > 3000) return null;
     const { u, v } = ndcToVideoUv(ndcX, ndcY);
     if (u < 0 || u > 1 || v < 0 || v > 1) return null;
@@ -724,10 +736,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     const py = Math.min(map.height - 1, Math.floor(v * map.height));
     // Same unprojection + frame the RANSAC cloud used, so picks land on the fitted planes.
     const point = pickFromMapRobust(map, px, py, surfaceEstimator.lastFrame);
-    if (!point) return null;
+    if (!point) {
+      // Textureless hole (stereo): a fitted horizontal surface crossing the pixel ray near the nearest valid depth.
+      return pickOnSurfaceThroughHole(map, px, py, surfaceEstimator.lastFrame, Object.values(store.current.surfaces));
+    }
     const below = surfaceBelow(store.current, { x: point.x, y: point.y + 0.05, z: point.z });
     if (below && point.y + 0.05 - below.aabb.max.y < 0.2) point.y = below.aabb.max.y;
-    return point;
+    return { point, confidence: 1, mode: 'depth' };
   }
 
   /** Drop a world point onto the nearest detected horizontal surface below it (any distance), if one exists. */
@@ -1453,6 +1468,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     },
     tuning,
     pickWorld,
+    pickWorldDetailed,
     prepareRealObject,
     calibrateNearFar(ndcNear, mNear, ndcFar, mFar) {
       if (!(depthEstimator instanceof ModelDepthEstimator) || !depthEstimator.lastInverse) return false;

@@ -102,6 +102,12 @@ export interface DepthMap {
   metric: Float32Array;
   /** 0..1: how much to trust `metric` (model + fit quality); 0 for a bare plane prior far from the floor. */
   confidence: number;
+  /**
+   * Optional per-pixel trust (0..1, same layout as `metric`): stereo maps mark matched pixels 1,
+   * small mean-filled holes 0.5 and plane-filled holes 0.4. Absent = every valid pixel counts 1.
+   * RANSAC (surfaces/ransac.ts) weights inlier votes and refits by it.
+   */
+  weight?: Float32Array;
   source: DepthSource;
   /** Pose the frame that produced this map was taken from. */
   pose: Pose;

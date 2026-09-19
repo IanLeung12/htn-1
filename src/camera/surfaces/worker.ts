@@ -9,8 +9,9 @@
 import type { DepthMap } from '../contract';
 import { DepthSurfaceEstimator, type SurfaceTuning } from './depth-surfaces';
 
-export interface SerializedDepthMap extends Omit<DepthMap, 'metric'> {
+export interface SerializedDepthMap extends Omit<DepthMap, 'metric' | 'weight'> {
   metric: ArrayBuffer;
+  weight?: ArrayBuffer;
 }
 
 interface UpdateMessage {
@@ -29,7 +30,7 @@ self.onmessage = (event: MessageEvent<UpdateMessage>) => {
   if (msg.type !== 'update') return;
   tuning = msg.tuning;
   if (!estimator) estimator = new DepthSurfaceEstimator({ cameraHeightM: msg.cameraHeightM, getTuning: () => tuning as SurfaceTuning });
-  const map: DepthMap = { ...msg.map, metric: new Float32Array(msg.map.metric) };
+  const map: DepthMap = { ...msg.map, metric: new Float32Array(msg.map.metric), weight: msg.map.weight ? new Float32Array(msg.map.weight) : undefined };
   // The worker has its own clock; force the run by using the map's timestamp ordering only.
   estimator.update(map, map.pose, msg.now);
   postMessage({

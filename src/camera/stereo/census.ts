@@ -331,3 +331,68 @@ export function stereoDepthCpu(left: GrabbedFrame, right: Uint8ClampedArray, par
 
   return { metric, valid, validFraction: validCount / (w * h) };
 }
+
+export interface PlaneFillOptions {
+  /** Neighbourhood radius (7 -> 15x15). */
+  radius?: number;
+  /** Minimum valid fraction of the neighbourhood (excluding the centre). */
+  minValidFraction?: number;
+  /** Largest RMS residual (px) of the neighbours to the fitted plane. */
+  maxRmsPx?: number;
+  /** Confidence written for filled pixels. */
+  confidence?: number;
+}
+
+/**
+ * CPU reference of the matcher's plane-aware hole fill (stereo-depth.ts FS_FINAL):
+ * every invalid pixel (disparity <= 0) whose (2r+1)^2 neighbourhood is at least
+ * `minValidFraction` valid gets the value at its centre of the least-squares plane
+ * d = a*x + b*y + c through those neighbours, provided they fit it to within
+ * `maxRmsPx`. Larger holes and non-planar neighbourhoods stay 0. Returns the
+ * filled disparity and per-pixel confidence (1 valid input, `confidence` filled, 0).
+ */
+export function planeFillDisparity(disp: Float32Array, w: number, h: number, opts: PlaneFillOptions = {}): { disp: Float32Array; confidence: Float32Array } {
+  const r = opts.radius ?? 7;
+  const minFraction = opts.minValidFraction ?? 0.2;
+  const maxRms = opts.maxRmsPx ?? 2;
+  const fillConf = opts.confidence ?? 0.4;
+  const out = new Float32Array(disp);
+  const confidence = new Float32Array(w * h);
+  const side = 2 * r + 1;
+  const minCount = minFraction * (side * side - 1);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if ((disp[i] as number) > 0) {
+        confidence[i] = 1;
+        continue;
+      }
+      let Sxx = 0, Sxy = 0, Syy = 0, Sx = 0, Sy = 0, Sd = 0, Sxd = 0, Syd = 0, Sdd = 0, N = 0;
+      for (let dy = -r; dy <= r; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const v = disp[yy * w + xx] as number;
+          if (!(v > 0)) continue;
+          Sxx += dx * dx; Sxy += dx * dy; Syy += dy * dy; Sx += dx; Sy += dy;
+          Sd += v; Sxd += dx * v; Syd += dy * v; Sdd += v * v; N += 1;
+        }
+      }
+      if (N < minCount) continue;
+      // Solve [Sxx Sxy Sx; Sxy Syy Sy; Sx Sy N] [a b c]^T = [Sxd Syd Sd]^T by Cramer's rule.
+      const det = Sxx * (Syy * N - Sy * Sy) - Sxy * (Sxy * N - Sy * Sx) + Sx * (Sxy * Sy - Syy * Sx);
+      if (Math.abs(det) < 1e-3) continue;
+      const a = (Sxd * (Syy * N - Sy * Sy) - Sxy * (Syd * N - Sy * Sd) + Sx * (Syd * Sy - Syy * Sd)) / det;
+      const b = (Sxx * (Syd * N - Sy * Sd) - Sxd * (Sxy * N - Sy * Sx) + Sx * (Sxy * Sd - Syd * Sx)) / det;
+      const c = (Sxx * (Syy * Sd - Syd * Sy) - Sxy * (Sxy * Sd - Syd * Sx) + Sxd * (Sxy * Sy - Syy * Sx)) / det;
+      const sse = Math.max(0, Sdd - a * Sxd - b * Syd - c * Sd);
+      if (Math.sqrt(sse / N) > maxRms) continue;
+      if (!(c > 0)) continue;
+      out[i] = c;
+      confidence[i] = fillConf;
+    }
+  }
+  return { disp: out, confidence };
+}
