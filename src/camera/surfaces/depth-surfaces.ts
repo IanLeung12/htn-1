@@ -133,6 +133,8 @@ const TABLE_REGION_PAD_M = 0.1;
 const AABB_CHANGE_EPS_M = 0.02;
 const VOLUME_MATCH_DIST_M = 0.15;
 const VOLUME_TABLE_OVERLAP_FRACTION = 0.5;
+/** Clusters flatter than this inside a table footprint are the table top's own noise, not an object. */
+const VOLUME_TABLE_SHEET_MAX_HEIGHT_M = 0.06;
 const WALL_SLIVER_THIN_M = 0.12;
 const WALL_SLIVER_TALL_M = 0.6;
 
@@ -490,7 +492,18 @@ export class DepthSurfaceEstimator implements SurfaceEstimator {
       if (c.lowestY - c.supportY > VOLUME_MAX_SUPPORT_GAP_M) return false;
       if (c.count < tuning.clusterMinCount) return false;
       if (Math.min(dx, dz) < WALL_SLIVER_THIN_M && dy > WALL_SLIVER_TALL_M) return false; // wall fragment
-      if (newTables.some((t) => xzOverlapFraction(c.aabb, t.surface.aabb) > VOLUME_TABLE_OVERLAP_FRACTION)) return false; // a table top
+      // A table top (noisy points just above a table plane) is a thin sheet inside the table's
+      // footprint, or covers most of the table. An object STANDING on the table also lies inside
+      // its footprint, so the footprint test alone must not reject it (it rejected every object
+      // on the ZED desk once the desk was registered as a table).
+      if (
+        newTables.some(
+          (t) =>
+            (dy < VOLUME_TABLE_SHEET_MAX_HEIGHT_M && xzOverlapFraction(c.aabb, t.surface.aabb) > VOLUME_TABLE_OVERLAP_FRACTION) ||
+            xzOverlapFraction(t.surface.aabb, c.aabb) > VOLUME_TABLE_OVERLAP_FRACTION,
+        )
+      )
+        return false;
       if (newWalls.some((w) => xzOverlapFraction(c.aabb, w.surface.aabb) > 0.8)) return false;
       return true;
     };

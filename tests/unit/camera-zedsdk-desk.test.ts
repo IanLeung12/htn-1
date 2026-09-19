@@ -49,6 +49,20 @@ describe('zed-sdk desk frame in trustPose mode', () => {
     expect(est.lastFrame!.position.y).toBeCloseTo(0.75, 9);
   });
 
+  it('objects standing on the desk (cans, controller) survive as volumes instead of being rejected as the table top', () => {
+    // Every object on the desk lies entirely inside the desk footprint; only thin sheets or
+    // clusters covering most of the table are table-top noise.
+    const onDesk = est.volumes.filter((v) => {
+      const bottom = v.pose.position.y - v.halfExtents.y;
+      return bottom > 0.6 && bottom < 0.9 && v.halfExtents.y * 2 >= 0.06;
+    });
+    expect(onDesk.length).toBeGreaterThanOrEqual(1);
+    for (const v of onDesk) {
+      expect(v.halfExtents.x * 2).toBeLessThan(0.6);
+      expect(v.halfExtents.z * 2).toBeLessThan(0.6);
+    }
+  });
+
   it('valid pixels pick the unprojected point (desk pixels land on the desk plane)', () => {
     const desk = tables.find((t) => t.surface.aabb.max.y > 0.62 && t.surface.aabb.max.y < 0.78)!;
     // Row 108 (NDC y = -0.2) has desk depth across the width in the fixture.
