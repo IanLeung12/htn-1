@@ -1421,10 +1421,18 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
         const seed = silhouetteTracker.peekDepthOnly(obj.id);
         if (rgbThisFrame && seed) {
           lastColorGrowAt.set(obj.id, now);
+          // Growth may not leave the object's own box (projected to the frame, +25 %): a silver
+          // can and a white desk share a hue, and an unbounded fill swallowed half the desk.
+          const he = obj.occlusionProxy.kind === 'box' ? obj.occlusionProxy.halfExtents : { x: 0.1, y: 0.1, z: 0.1 };
+          const boxSideM = Math.max(he.x, he.y, he.z) * 2;
+          const pxPerM = rgbThisFrame.height / (2 * seed.blobDepthM * Math.tan(latestDepth.fovY / 2));
+          const maxGrowPx = Math.max(4, Math.round(boxSideM * pxPerM * 0.625));
           const grown = growMaskByColor(rgbThisFrame.rgba, rgbThisFrame.width, rgbThisFrame.height, seed, latestDepth.metric, {
             colorTolerance: tuning.value.colorTolerance,
             depthWidth: latestDepth.width,
             depthHeight: latestDepth.height,
+            maxGrowPx,
+            depthToleranceM: 0.08,
           });
           silhouetteTracker.setGrown(obj.id, grown);
         }
