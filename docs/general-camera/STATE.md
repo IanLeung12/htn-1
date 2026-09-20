@@ -244,6 +244,25 @@ objects with a current grown mask. Unit tests: `tests/unit/camera-color-grow.tes
 (synthetic desk + orange ellipse + far same-colour wall: >= 85% of the ellipse, < 3% of the
 desk, 0 px of the wall, < 20 ms). Not yet verified on the live ZED feed.
 
+## Real-object editing on the live ZED (2026-09-19, late)
+
+Verified headlessly (Playwright Chromium against the real bridge, `tools/live/live-check.mjs`):
+a click on each of three desk objects (two cans, a sleep mask) registers it (click-to-detect,
+`surfaces/local-detect.ts`), pops the click-point menu (`context-menu.ts`: Move with a sticky
+drag, Delete/Restore, Capture plate, Undo), and Delete erases it with the synthetic fill inside
+the colour-grown silhouette (`edit/color-grow.ts`, `edit/inpaint.ts`). All three end up
+`tier B, visible false, eraserSynthetic 3`.
+
+Quality caveats (camera flat on the desk, edge-on view, 20 cm minimum range): stereo depth is
+sparse on shiny cans / black plastic / fabric, so silhouettes lean on the colour grow, which is
+bounded by the object's projected box (horizontal +25 %, vertical 2x) and an 8 cm depth
+tolerance; the fill is a nearest-donor inpaint blurred twice, visibly approximate on textured
+backgrounds; a person's arm in view spills into masks. Raising the camera 20-30 cm above the
+desk and tilting it down would give real depth on the objects and clean silhouettes.
+
+Tab visibility: Chrome throttles a covered tab (`document.hidden`), which stops the frame loop;
+verify with the headless script rather than the user's window when they are at the machine.
+
 ## Next steps
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,

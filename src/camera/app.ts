@@ -1428,13 +1428,13 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
           const pxPerM = rgbThisFrame.height / (2 * seed.blobDepthM * Math.tan(latestDepth.fovY / 2));
           const maxGrowPx = Math.max(4, Math.round(boxSideM * pxPerM * 0.625));
           // Sparse depth mostly cuts an object's TOP off (shiny can tops, a mask's crown): allow
-          // three times the vertical growth, horizontal stays tight (the desk beside it).
+          // twice the vertical growth, horizontal stays tight (the desk beside it).
           const grown = growMaskByColor(rgbThisFrame.rgba, rgbThisFrame.width, rgbThisFrame.height, seed, latestDepth.metric, {
             colorTolerance: tuning.value.colorTolerance,
             depthWidth: latestDepth.width,
             depthHeight: latestDepth.height,
             maxGrowPx,
-            maxGrowPxY: maxGrowPx * 3,
+            maxGrowPxY: maxGrowPx * 2,
             depthToleranceM: 0.08,
           });
           silhouetteTracker.setGrown(obj.id, grown);
