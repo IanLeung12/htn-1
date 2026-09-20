@@ -48,7 +48,7 @@ import { INACTIVE_GUIDE, makeActiveGuide } from '@/app/guide';
 import { createCapturePipeline, createPlateTextureRegistry } from '@/capture';
 import { appearanceFrameKey, createFrameStore, ROOM_SHELL_FRAME_ID } from '@/capture/frame-store';
 import type { CameraFrame, CameraFrameSource, DetectedVolume } from '@/capture/contract';
-import type { CameraAppConfig, DepthEstimator, FrameSource, PoseSource, SurfaceEstimator } from './contract';
+import type { CameraAppConfig, DepthEstimator, FrameSource, GrabbedFrame, PoseSource, SurfaceEstimator } from './contract';
 import { DEFAULT_CAMERA_CONFIG } from './contract';
 import { createFrameSource } from './frame-source';
 import { createPoseSource } from './pose';
@@ -57,6 +57,7 @@ import { WorkerSurfaceEstimator } from './surfaces/worker-estimator';
 import { SurfaceRegistry } from './surfaces/registry';
 import { SceneDebugOverlay } from './debug-overlay';
 import { ImpostorViews, isImpostorActive } from './impostor';
+import { growMaskByColor } from './edit/color-grow';
 import { ZedStereoFrameSource } from './stereo/zed-frame-source';
 import { createZedSdkBackend } from './zedsdk';
 import { loadZedCalibration } from './stereo/zed-calib';
@@ -123,7 +124,7 @@ export interface CameraHandle {
   setCameraHeight(h: number): void;
   setFovY(rad: number): void;
   /** Renderer-side counts for tests/diagnostics (hull meshes drawn over the video, object views). */
-  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number; impostors: number; eraserActive: number; eraserSynthetic: number; masksTracked: number };
+  renderStats(): { hullChildren: number; viewChildren: number; appearanceActive: number; impostors: number; eraserActive: number; eraserSynthetic: number; masksTracked: number; masksGrown: number };
   /** Live tunables (persisted in localStorage; `t` toggles the slider panel). */
   readonly tuning: TuningStore;
   /** World point the estimated depth sees at a canvas NDC position (snapped onto the surface below); null without depth. */
@@ -201,6 +202,8 @@ const AVERAGE_SHOT_COUNT = 6;
 const AVERAGE_SHOT_INTERVAL_MS = 166;
 /** How far a discovered object may drift from its registered pose (physics settle, not a drag) and still count as "present, keep tracking its silhouette". */
 const STILL_AT_ORIGINAL_SPOT_M = 0.03;
+/** Minimum time between colour-grows of one object's silhouette (edit/color-grow.ts). */
+const COLOR_GROW_INTERVAL_MS = 250;
 
 function bearingDelta(a: Pose, b: Pose): number {
   const fa = quatRotateVec3(a.rotation, { x: 0, y: 0, z: -1 });
@@ -387,6 +390,8 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   // eraser both use the object's actual shape instead of its occlusion box (docs/general-camera).
   const silhouetteTracker = new SilhouetteTracker();
   let lastTrackedPhysicalIds = new Set<string>();
+  /** Per-object time of the last colour-grow (throttle). */
+  const lastColorGrowAt = new Map<string, number>();
   impostors.setMaskSource((objectId) => {
     const mask = silhouetteTracker.peek(objectId);
     const grid = depthEstimator.latest;
@@ -1346,9 +1351,12 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
 
     // Grab a downscaled frame every GRAB_INTERVAL_MS for optical flow (motion / tracking loss)
     // and, when the estimator is ready, for depth - at most one inference in flight, never awaited.
+    // This frame's RGB grab (left eye for stereo), reused by the colour-grow below.
+    let rgbThisFrame: GrabbedFrame | null = null;
     if (inSession && frameSource.ready && now - lastGrabAt > GRAB_INTERVAL_MS) {
       lastGrabAt = now;
       const grabbed = stereoSource && frameSource.grabStereo ? frameSource.grabStereo(STEREO_WORK_WIDTH) : frameSource.grab(CAPTURE_WIDTH);
+      rgbThisFrame = grabbed;
       if (grabbed) {
         visualPose?.pushFrame(grabbed, intr, now);
         const interval = stereoSource ? STEREO_SUBMIT_INTERVAL_MS : DEPTH_SUBMIT_INTERVAL_MS;
@@ -1403,10 +1411,30 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       // A synthetic-only plate (tier B via syntheticDelete) means the real object is STILL there:
       // keep tracking it too, so a later Delete has a silhouette for the eraser to fill.
       const stillThere = obj.tier === 'D' || (obj.background.length > 0 && obj.background.every((b) => b.provenance === 'synthetic_completion'));
-      if (stillAtOriginalSpot && stillThere) silhouetteTracker.update(obj.id, depthFrameFromMap(latestDepth), obj);
+      if (!(stillAtOriginalSpot && stillThere)) continue;
+      silhouetteTracker.update(obj.id, depthFrameFromMap(latestDepth), obj);
+      // Colour-grow the depth silhouette through the RGB frame whenever the depth mask
+      // changed (sparse stereo depth on shiny/dark/fabric objects covers only a patch;
+      // edit/color-grow.ts), at most one grow per object per COLOR_GROW_INTERVAL_MS.
+      if (tuning.value.colorGrow >= 1 && silhouetteTracker.needsGrow(obj.id) && now - (lastColorGrowAt.get(obj.id) ?? -Infinity) >= COLOR_GROW_INTERVAL_MS) {
+        if (!rgbThisFrame && frameSource.ready) rgbThisFrame = frameSource.grab(CAPTURE_WIDTH);
+        const seed = silhouetteTracker.peekDepthOnly(obj.id);
+        if (rgbThisFrame && seed) {
+          lastColorGrowAt.set(obj.id, now);
+          const grown = growMaskByColor(rgbThisFrame.rgba, rgbThisFrame.width, rgbThisFrame.height, seed, latestDepth.metric, {
+            colorTolerance: tuning.value.colorTolerance,
+            depthWidth: latestDepth.width,
+            depthHeight: latestDepth.height,
+          });
+          silhouetteTracker.setGrown(obj.id, grown);
+        }
+      }
     }
     for (const id of lastTrackedPhysicalIds) {
-      if (!trackedPhysicalIds.has(id)) silhouetteTracker.clear(id);
+      if (!trackedPhysicalIds.has(id)) {
+        silhouetteTracker.clear(id);
+        lastColorGrowAt.delete(id);
+      }
     }
     lastTrackedPhysicalIds = trackedPhysicalIds;
 
@@ -1688,9 +1716,11 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       });
       let impostorCount = 0;
       let masksTracked = 0;
+      let masksGrown = 0;
       for (const id of Object.keys(store.current.objects)) {
         if (isImpostorActive(impostors, id)) impostorCount += 1;
         if (silhouetteTracker.peek(id)) masksTracked += 1;
+        if (silhouetteTracker.hasGrown(id)) masksGrown += 1;
       }
       return {
         hullChildren: backgroundHull.group.children.length,
@@ -1700,6 +1730,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
         eraserActive: staticEraser.activeCount,
         eraserSynthetic: staticEraser.syntheticCount,
         masksTracked,
+        masksGrown,
       };
     },
     tuning,

@@ -60,6 +60,13 @@ export interface CameraTuning {
    * synthetic; see src/camera/edit/inpaint.ts). 0 = delete needs a captured clean plate.
    */
   syntheticDelete: number;
+  /**
+   * 1 = grow each tracked depth silhouette through the RGB frame by colour (sparse stereo
+   * depth on shiny/dark/fabric objects covers only a patch; see src/camera/edit/color-grow.ts).
+   */
+  colorGrow: number;
+  /** Colour distance tolerance for the grow (lightness-desensitised space; see color-grow.ts). */
+  colorTolerance: number;
 }
 
 export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
@@ -90,6 +97,8 @@ export const DEFAULT_TUNING: Readonly<CameraTuning> = Object.freeze({
   occluderEnabled: 1,
   occluderBiasM: 0.02,
   syntheticDelete: 1,
+  colorGrow: 1,
+  colorTolerance: 26,
 });
 
 export interface TuningSpecEntry {
@@ -128,6 +137,8 @@ export const TUNING_SPEC: Record<keyof CameraTuning, TuningSpecEntry> = {
   occluderEnabled: { min: 0, max: 1, step: 1, label: 'Depth occlusion (o)', group: 'occlusion' },
   occluderBiasM: { min: 0, max: 0.2, step: 0.005, label: 'Occluder bias (m)', group: 'occlusion' },
   syntheticDelete: { min: 0, max: 1, step: 1, label: 'Synthetic delete', group: 'edit' },
+  colorGrow: { min: 0, max: 1, step: 1, label: 'Colour-grow silhouettes', group: 'edit' },
+  colorTolerance: { min: 4, max: 80, step: 1, label: 'Colour tolerance', group: 'edit' },
 };
 
 export type TuningPresetId = 'laptop-desk' | 'phone-handheld' | 'tripod-room';

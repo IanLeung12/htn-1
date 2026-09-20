@@ -155,7 +155,7 @@ function median(values: number[]): number {
 }
 
 /** Grows a binary mask by `radius` pixels (4-neighbour dilation, `radius` passes). */
-function dilate(mask: Uint8Array, width: number, height: number, radius: number): Uint8Array {
+export function dilate(mask: Uint8Array, width: number, height: number, radius: number): Uint8Array {
   let cur = mask;
   for (let pass = 0; pass < radius; pass++) {
     const next = new Uint8Array(width * height);
@@ -179,7 +179,7 @@ function dilate(mask: Uint8Array, width: number, height: number, radius: number)
 }
 
 /** Softens a binary mask's edges into a 0..255 alpha ramp over ~`radius` pixels via repeated box blur. */
-function feather(mask: Uint8Array, width: number, height: number, radius: number): Uint8ClampedArray {
+export function feather(mask: Uint8Array, width: number, height: number, radius: number): Uint8ClampedArray {
   let cur = new Float32Array(width * height);
   for (let i = 0; i < cur.length; i++) cur[i] = mask[i] ? 255 : 0;
 
@@ -284,6 +284,15 @@ export class SilhouetteTracker {
     string,
     { x0: number; y0: number; width: number; height: number; blobDepthM: number[]; frames: Uint8ClampedArray[] }
   >();
+  /**
+   * Version of the tracked DEPTH mask per object: bumped whenever the median
+   * mask materially changes (bbox change, or its alpha sum moves by more than
+   * 2%), so a colour-grown mask (`setGrown`) stays valid across the median's
+   * per-frame jitter but is invalidated by a real change (object/camera moved,
+   * depth found more or less of it).
+   */
+  private readonly depthVersion = new Map<string, { version: number; alphaSum: number }>();
+  private readonly grown = new Map<string, { mask: SilhouetteMask; version: number }>();
 
   /**
    * Feeds one frame's mask for `objectId`; returns the tracked (median)
@@ -298,31 +307,31 @@ export class SilhouetteTracker {
     }
 
     let entry = this.history.get(objectId);
+    let bboxChanged = false;
     if (!entry || entry.x0 !== mask.x0 || entry.y0 !== mask.y0 || entry.width !== mask.width || entry.height !== mask.height) {
       entry = { x0: mask.x0, y0: mask.y0, width: mask.width, height: mask.height, blobDepthM: [], frames: [] };
       this.history.set(objectId, entry);
+      bboxChanged = true;
     }
     entry.frames.push(mask.alpha);
     entry.blobDepthM.push(mask.blobDepthM);
     if (entry.frames.length > historyLength) entry.frames.shift();
     if (entry.blobDepthM.length > historyLength) entry.blobDepthM.shift();
 
-    const n = mask.width * mask.height;
-    const medianAlpha = new Uint8ClampedArray(n);
-    const column: number[] = [];
-    for (let i = 0; i < n; i++) {
-      column.length = 0;
-      for (const frame of entry.frames) column.push(frame[i] as number);
-      medianAlpha[i] = Math.round(median(column));
+    const tracked = this.medianOf(entry);
+    let alphaSum = 0;
+    for (let i = 0; i < tracked.alpha.length; i++) alphaSum += tracked.alpha[i] as number;
+    const ver = this.depthVersion.get(objectId);
+    if (!ver) {
+      this.depthVersion.set(objectId, { version: 1, alphaSum });
+    } else if (bboxChanged || Math.abs(alphaSum - ver.alphaSum) > Math.max(64, 0.02 * ver.alphaSum)) {
+      ver.version += 1;
+      ver.alphaSum = alphaSum;
     }
-
-    return { x0: entry.x0, y0: entry.y0, width: entry.width, height: entry.height, alpha: medianAlpha, blobDepthM: median(entry.blobDepthM) };
+    return tracked;
   }
 
-  /** Latest tracked mask without feeding a new frame, or undefined if none tracked. */
-  peek(objectId: string): SilhouetteMask | undefined {
-    const entry = this.history.get(objectId);
-    if (!entry || entry.frames.length === 0) return undefined;
+  private medianOf(entry: { x0: number; y0: number; width: number; height: number; blobDepthM: number[]; frames: Uint8ClampedArray[] }): SilhouetteMask {
     const n = entry.width * entry.height;
     const medianAlpha = new Uint8ClampedArray(n);
     const column: number[] = [];
@@ -334,8 +343,53 @@ export class SilhouetteTracker {
     return { x0: entry.x0, y0: entry.y0, width: entry.width, height: entry.height, alpha: medianAlpha, blobDepthM: median(entry.blobDepthM) };
   }
 
+  /**
+   * Latest tracked mask without feeding a new frame, or undefined if none
+   * tracked. Returns the colour-grown mask (`setGrown`) when one exists for
+   * the current depth mask version; otherwise the depth-only median.
+   */
+  peek(objectId: string): SilhouetteMask | undefined {
+    const g = this.grown.get(objectId);
+    if (g && g.version === this.depthVersion.get(objectId)?.version) return g.mask;
+    return this.peekDepthOnly(objectId);
+  }
+
+  /** Latest tracked depth-only (median) mask, ignoring any colour-grown mask. */
+  peekDepthOnly(objectId: string): SilhouetteMask | undefined {
+    const entry = this.history.get(objectId);
+    if (!entry || entry.frames.length === 0) return undefined;
+    return this.medianOf(entry);
+  }
+
+  /**
+   * Stores a mask grown from the current depth mask (see `./color-grow.ts`);
+   * `peek` returns it until the next depth update that materially changes
+   * the depth mask. No-op if nothing is tracked for the object.
+   */
+  setGrown(objectId: string, mask: SilhouetteMask): void {
+    const ver = this.depthVersion.get(objectId);
+    if (!ver) return;
+    this.grown.set(objectId, { mask, version: ver.version });
+  }
+
+  /** True when a depth mask is tracked and no colour-grown mask is valid for its current version. */
+  needsGrow(objectId: string): boolean {
+    const ver = this.depthVersion.get(objectId);
+    if (!ver) return false;
+    const g = this.grown.get(objectId);
+    return !g || g.version !== ver.version;
+  }
+
+  /** True when `peek` would return a colour-grown mask. */
+  hasGrown(objectId: string): boolean {
+    const g = this.grown.get(objectId);
+    return !!g && g.version === this.depthVersion.get(objectId)?.version;
+  }
+
   clear(objectId: string): void {
     this.history.delete(objectId);
+    this.depthVersion.delete(objectId);
+    this.grown.delete(objectId);
   }
 }
 
