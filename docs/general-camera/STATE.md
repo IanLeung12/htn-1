@@ -223,6 +223,27 @@ Still open: transient 'table' planes at 0.9-1.5 m (laptop/monitor tops) and the 
 splitting into two entries (0.71/0.77) in the registry; a person entering the view drops
 depth confidence and picks fall back to surface mode.
 
+## Colour-grown silhouettes
+
+Stereo depth is sparse on shiny cans, matte black controllers and fabric (a 20x8 cm sleep
+mask got a 33x17 px depth silhouette), so Delete erased only a patch and the impostor cut out
+a fragment. `src/camera/edit/color-grow.ts` (`growMaskByColor`) grows the tracked depth mask
+through the RGB frame: a 4-neighbour BFS from every confident seed pixel into pixels whose
+colour is within `colorTolerance` (default 26) of both the neighbour it came from and the
+region's running mean, measured in a lightness-desensitised space (r-g, g-b, 0.4*mean) so
+shading on a curved can passes but a hue change to the desk does not. It never grows more
+than 2.5x the seed bbox's larger side (cap 140 px), never enters a pixel whose valid depth is
+more than 0.2 m from the blob depth (same-coloured background is far), and stops at 60k
+visits; the result keeps the seed alpha and is feathered 2 px. `app.ts` re-grows an object's
+mask whenever its depth mask materially changes (bbox, or alpha sum by > 2%), at most once
+per object per 250 ms, reusing the frame loop's RGB grab; `SilhouetteTracker.peek` returns the
+grown mask while it is current and falls back to the depth-only median (`peekDepthOnly`)
+after a change until re-grown, so the impostor and eraser pick it up without changes. Tuning
+`colorGrow` (0/1) and `colorTolerance` (edit group); `renderStats().masksGrown` counts
+objects with a current grown mask. Unit tests: `tests/unit/camera-color-grow.test.ts`
+(synthetic desk + orange ellipse + far same-colour wall: >= 85% of the ellipse, < 3% of the
+desk, 0 px of the wall, < 20 ms). Not yet verified on the live ZED feed.
+
 ## Next steps
 
 1. Owner feedback loop on the real camera: tune `planeMinExtentM`, `clusterMinCount`,
