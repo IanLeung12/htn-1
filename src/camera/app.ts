@@ -989,11 +989,15 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       setTransientHint('Nothing standing above the surface there. Click on the object itself.');
       return null;
     }
-    // An existing object overlapping the new volume is the same thing: select it instead.
+    // An existing object whose box overlaps the new volume's box is the same thing: select it
+    // instead (a deleted one too, so a click on its spot lets the user Restore it).
     for (const o of Object.values(store.current.objects)) {
       if (o.origin !== 'physical') continue;
       const d = o.currentPose.position;
-      if (Math.abs(d.x - volume.pose.position.x) < 0.1 && Math.abs(d.z - volume.pose.position.z) < 0.1 && Math.abs(d.y - volume.pose.position.y) < 0.2) {
+      const he = o.occlusionProxy.kind === 'box' ? o.occlusionProxy.halfExtents : { x: 0.1, y: 0.1, z: 0.1 };
+      const v = volume.pose.position;
+      const vh = volume.halfExtents;
+      if (Math.abs(d.x - v.x) < he.x + vh.x && Math.abs(d.z - v.z) < he.z + vh.z && Math.abs(d.y - v.y) < he.y + vh.y) {
         interaction.select(o.id);
         return o.id;
       }
