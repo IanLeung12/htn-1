@@ -23,6 +23,8 @@ export interface ColorGrowOptions {
   colorTolerance?: number;
   /** Max growth (frame px) beyond the seed bbox. Default 2.5x the bbox's larger side, capped at 140. */
   maxGrowPx?: number;
+  /** Vertical growth limit (frame px); defaults to `maxGrowPx`. Sparse depth usually cuts an object's TOP off. */
+  maxGrowPxY?: number;
   /** Depth disagreement (m) with `seed.blobDepthM` that blocks a pixel. Default 0.2. */
   depthToleranceM?: number;
   /** Hard cap on BFS visits. Default 60000. */
@@ -88,11 +90,12 @@ export function growMaskByColor(
   const fx1 = Math.min(width, Math.ceil((seed.x0 + seed.width) * sx));
   const fy1 = Math.min(height, Math.ceil((seed.y0 + seed.height) * sy));
   const maxGrow = opts?.maxGrowPx ?? Math.min(DEFAULT_MAX_GROW_CAP, 2.5 * Math.max(fx1 - fx0, fy1 - fy0));
+  const maxGrowY = opts?.maxGrowPxY ?? maxGrow;
   // Search window in frame px.
   const wx0 = Math.max(0, Math.floor(fx0 - maxGrow));
-  const wy0 = Math.max(0, Math.floor(fy0 - maxGrow));
+  const wy0 = Math.max(0, Math.floor(fy0 - maxGrowY));
   const wx1 = Math.min(width, Math.ceil(fx1 + maxGrow));
-  const wy1 = Math.min(height, Math.ceil(fy1 + maxGrow));
+  const wy1 = Math.min(height, Math.ceil(fy1 + maxGrowY));
   const ww = Math.max(0, wx1 - wx0);
   const wh = Math.max(0, wy1 - wy0);
 
@@ -165,7 +168,7 @@ export function growMaskByColor(
       // Bound: at most maxGrow px outside the seed bbox (per axis).
       const dxOut = nx < fx0 ? fx0 - nx : nx >= fx1 ? nx - fx1 + 1 : 0;
       const dyOut = ny < fy0 ? fy0 - ny : ny >= fy1 ? ny - fy1 + 1 : 0;
-      if (dxOut > maxGrow || dyOut > maxGrow) continue;
+      if (dxOut > maxGrow || dyOut > maxGrowY) continue;
       const nfi = (ny * width + nx) * 4;
       if (colorDist2(rgba, nfi, from0, from1, from2) > tol2) continue;
       if (colorDist2(rgba, nfi, mean0, mean1, mean2) > tol2) continue;

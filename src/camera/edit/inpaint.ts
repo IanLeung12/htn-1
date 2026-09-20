@@ -161,8 +161,9 @@ export function inpaintMaskDetailed(frame: CameraFrame, mask: SilhouetteMask, ri
     }
   }
 
-  // 6. 3x3 box blur over the filled pixels (reading the pre-blur fill plus the observed ring)
-  // to soften the Voronoi seams between donor cells.
+  // 6. Two passes of a 5x5 box blur over the filled pixels (reading the pre-blur fill plus the
+  // observed ring) to soften the Voronoi seams between donor cells.
+  for (let pass = 0; pass < 2; pass++) {
   const pre = new Uint8ClampedArray(rgba);
   for (let y = 0; y < h; y++) {
     const fy = by0 + y;
@@ -173,10 +174,10 @@ export function inpaintMaskDetailed(frame: CameraFrame, mask: SilhouetteMask, ri
       let g = 0;
       let b = 0;
       let n = 0;
-      for (let oy = -1; oy <= 1; oy++) {
+      for (let oy = -2; oy <= 2; oy++) {
         const py = fy + oy;
         if (py < 0 || py >= frame.height) continue;
-        for (let ox = -1; ox <= 1; ox++) {
+        for (let ox = -2; ox <= 2; ox++) {
           const px = fx + ox;
           if (px < 0 || px >= frame.width) continue;
           const k = (py * frame.width + px) * 4;
@@ -192,6 +193,7 @@ export function inpaintMaskDetailed(frame: CameraFrame, mask: SilhouetteMask, ri
       rgba[dst + 1] = Math.round(g / n);
       rgba[dst + 2] = Math.round(b / n);
     }
+  }
   }
 
   return { frame: out, filledPx, donorPx, ringPx: ringPxCount, donorFraction };
