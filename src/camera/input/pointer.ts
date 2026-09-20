@@ -255,6 +255,21 @@ export class PointerInputAdapter {
     if (!this.fromOverlay(e)) this.onPointerUp(e);
   };
 
+  /**
+   * Sticky drag ("Move" in the context menu): the object follows the mouse without a held
+   * button; the next press drops it (that press and its release do not start a new drag).
+   */
+  private sticky = false;
+
+  beginStickyDrag(clientX: number, clientY: number): void {
+    this.inject('down', clientX, clientY, 1, false);
+    this.sticky = true;
+  }
+
+  get stickyDrag(): boolean {
+    return this.sticky;
+  }
+
   /** Programmatic pointer injection (tests, voice "grab that"): coordinates in CSS pixels relative to the element. */
   inject(kind: 'down' | 'move' | 'up', clientX: number, clientY: number, pointerId = 1, touch = false): void {
     const rect = this.element.getBoundingClientRect();
@@ -263,6 +278,14 @@ export class PointerInputAdapter {
 
   private readonly onPointerDown = (e: PointerEvent): void => {
     const rect = this.element.getBoundingClientRect();
+    if (this.sticky) {
+      // Drop the sticky-dragged object here; swallow this press (its 'up' is ignored below).
+      this.sticky = false;
+      this.stickyRelease = true;
+      this.handle('up', 1, false, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+      e.preventDefault();
+      return;
+    }
     try {
       this.element.setPointerCapture(e.pointerId);
     } catch {
@@ -277,8 +300,14 @@ export class PointerInputAdapter {
     this.handle('move', e.pointerId, e.pointerType === 'touch', e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
   };
 
+  private stickyRelease = false;
+
   private readonly onPointerUp = (e: PointerEvent): void => {
     const rect = this.element.getBoundingClientRect();
+    if (this.stickyRelease) {
+      this.stickyRelease = false;
+      return;
+    }
     this.handle('up', e.pointerId, e.pointerType === 'touch', e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
   };
 

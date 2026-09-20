@@ -84,6 +84,7 @@ import { SYNTHETIC_DELETE_MIN_DONOR_FRACTION } from './edit/inpaint';
 import { averageFrames } from './edit/average-frames';
 import { pushAppearanceFrame, APPEARANCE_FRAME_COUNT, cameraMovedFromAppearance } from './edit/appearance';
 import { detectVolumeAtPixel, type LocalDetectTrace } from './surfaces/local-detect';
+import { ContextMenu } from './context-menu';
 import { capTierForSingleViewpoint } from './edit/single-viewpoint-tier';
 
 export interface CameraAppOptions {
@@ -430,11 +431,26 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
     rayFromNdc,
     depthPick: (x, y) => pickWorld(x, y),
     onTap: (ndcX, ndcY) => {
-      // A click on empty space (no object under the pointer) runs click-to-detect there.
+      const rect = canvas.getBoundingClientRect();
+      const clientX = rect.left + (ndcX * 0.5 + 0.5) * rect.width;
+      const clientY = rect.top + (0.5 - ndcY * 0.5) * rect.height;
+      // A tap on an object: the interaction controller selects it; pop the menu there.
       const ray: PointerRay = { origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } };
       rayFromNdc(ndcX, ndcY, ray);
-      if (raycastProxies(store.current, ray.origin, ray.direction, 30, PICK_PAD_M).length > 0) return;
-      void discoverAt(ndcX, ndcY);
+      const hit = raycastProxies(store.current, ray.origin, ray.direction, 30, PICK_PAD_M)[0];
+      if (hit) {
+        const obj = store.current.objects[hit.objectId];
+        if (obj) {
+          interaction.select(obj.id);
+          contextMenu.show(obj, clientX, clientY);
+        }
+        return;
+      }
+      // A click on empty space runs click-to-detect there; a result pops the menu too.
+      void discoverAt(ndcX, ndcY).then((id) => {
+        const obj = id ? store.current.objects[id] : undefined;
+        if (obj) contextMenu.show(obj, clientX, clientY);
+      });
     },
   });
   pointer.pickPadM = PICK_PAD_M;
@@ -564,6 +580,33 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
   });
 
   // ---- HUD + diagnostics -------------------------------------------------
+  // Click-point menu (Move / Delete / Restore / Capture plate / Undo) for the tapped object.
+  const contextMenu = new ContextMenu(container, {
+    move: (id) => {
+      const obj = store.current.objects[id];
+      if (!obj) return;
+      interaction.select(id);
+      const v = new THREE.Vector3(obj.currentPose.position.x, obj.currentPose.position.y, obj.currentPose.position.z).project(camera);
+      const n = { x: v.x, y: v.y };
+      const rect = canvas.getBoundingClientRect();
+      pointer.beginStickyDrag(rect.left + (n.x * 0.5 + 0.5) * rect.width, rect.top + (0.5 - n.y * 0.5) * rect.height);
+      setTransientHint(`${obj.userName} follows the mouse: click to drop it.`);
+    },
+    delete: (id) => {
+      interaction.select(id);
+      interaction.deleteSelected(conditions());
+    },
+    restore: (id) => {
+      interaction.select(id);
+      interaction.restoreSelected(conditions());
+    },
+    capturePlate: (id) => {
+      interaction.select(id);
+      void captureCleanPlate(id);
+    },
+    undo: () => store.dispatch({ intent: { kind: 'undo' }, source: 'ui', issuedAt: performance.now(), basedOnVersion: store.current.version }, conditions()),
+  });
+
   const domHud = new DomHud(container, headless, {
     onEnterAR: () => {
       void enterAR();
@@ -1557,6 +1600,7 @@ export async function startCameraApp(options: CameraAppOptions = {}): Promise<Ca
       return { localized: poseSource.quality.trackingOk, relocalizationMs: 0, hasPersistentHandle: false };
     },
     dispose(): void {
+      contextMenu.dispose();
       renderer.setAnimationLoop(null);
       voice.dispose();
       pointer.dispose();
